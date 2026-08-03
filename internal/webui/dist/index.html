@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pm · project manager</title>
+<style>
+  :root{
+    --bg:#0d1017; --panel:#151a23; --panel2:#1b212c; --line:#232b38;
+    --txt:#e6edf3; --muted:#8b96a5; --dim:#5b6675;
+    --up:#3fb950; --down:#6e7681; --warn:#d29922; --unclaimed:#a371f7;
+    --accent:#2f81f7; --accent2:#1f6feb; --danger:#f85149;
+    --radius:10px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:14px;line-height:1.45}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(13,16,23,.85);backdrop-filter:blur(8px);z-index:20}
+  .logo{font-weight:700;font-size:17px;letter-spacing:.5px;display:flex;align-items:center;gap:9px}
+  .logo .dot{width:9px;height:9px;border-radius:50%;background:var(--up);box-shadow:0 0 8px var(--up)}
+  .logo .dot.off{background:var(--danger);box-shadow:none}
+  .grow{flex:1}
+  .btn{background:var(--panel2);color:var(--txt);border:1px solid var(--line);padding:7px 13px;border-radius:8px;cursor:pointer;font-size:13px;font-family:var(--sans);display:inline-flex;align-items:center;gap:6px;transition:.12s}
+  .btn:hover{background:#232b38;border-color:#33405280}
+  .btn.primary{background:var(--accent2);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:var(--accent)}
+  .btn.sm{padding:4px 9px;font-size:12px}
+  .btn.icon{padding:5px 8px}
+  .btn.ghost{background:transparent}
+  .btn.danger:hover{background:#2b1414;border-color:var(--danger);color:var(--danger)}
+  main{max-width:1180px;margin:0 auto;padding:22px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:26px 4px 10px;font-weight:600}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--dim);font-weight:600;padding:10px 14px;border-bottom:1px solid var(--line)}
+  td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr.row:hover{background:var(--panel2)}
+  .st{display:inline-flex;align-items:center;gap:7px;font-size:12.5px}
+  .st .dot{width:8px;height:8px;border-radius:50%}
+  .st.up .dot{background:var(--up);box-shadow:0 0 7px var(--up)}
+  .st.down .dot{background:var(--down)}
+  .st.unclaimed .dot{background:var(--unclaimed);box-shadow:0 0 7px var(--unclaimed)}
+  .name{font-weight:600}
+  .sub{color:var(--dim);font-size:12px;font-family:var(--mono)}
+  .port{font-family:var(--mono);color:var(--txt)}
+  .badge{font-size:10.5px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .badge.service{color:var(--up);border-color:#1f4429;background:#0f2417}
+  .badge.ephemeral{color:var(--muted)}
+  .badge.src{font-family:var(--mono);text-transform:none;letter-spacing:0}
+  .actions{display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap}
+  .empty{padding:30px;text-align:center;color:var(--dim)}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(560px,94vw);max-height:88vh;overflow:auto;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .modal h3{margin:0;padding:18px 22px;border-bottom:1px solid var(--line);font-size:15px}
+  .modal .body{padding:20px 22px}
+  .modal .foot{padding:14px 22px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  input,select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 11px;font-size:13px;font-family:var(--mono)}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .logbox{background:#05070b;border:1px solid var(--line);border-radius:8px;padding:12px;font-family:var(--mono);font-size:12px;height:52vh;overflow:auto;white-space:pre-wrap;color:#c9d4e0}
+  .toast{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:80}
+  .toast div{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);padding:10px 15px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);font-size:13px;animation:in .2s}
+  .toast div.err{border-left-color:var(--danger)}
+  .toast div.ok{border-left-color:var(--up)}
+  @keyframes in{from{opacity:0;transform:translateY(8px)}}
+  .grouphdr{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .grouphdr .gname{font-weight:600}
+  .muted{color:var(--muted)}
+  .fsinfo{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:6px;font-family:var(--mono);font-size:12px}
+  .fsinfo .k{color:var(--dim);display:inline-block;width:64px}
+  .fsinfo .v{color:var(--txt)}
+  .fscrumb{font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:10px;word-break:break-all}
+  .fscrumb a{cursor:pointer}
+  .fslist{border:1px solid var(--line);border-radius:8px;max-height:46vh;overflow:auto}
+  .fsrow{display:flex;align-items:center;gap:10px;padding:9px 13px;border-bottom:1px solid var(--line);cursor:pointer}
+  .fsrow:last-child{border-bottom:none}
+  .fsrow:hover{background:var(--panel2)}
+  .fsrow .fic{opacity:.7}
+  .fsrow .fname{flex:1}
+  .fsrow .fstack{font-size:10.5px;color:var(--up);border:1px solid #1f4429;background:#0f2417;padding:1px 7px;border-radius:20px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="dot" id="daemonDot"></span> pm</div>
+  <span class="sub" id="counts"></span>
+  <div class="grow"></div>
+  <button class="btn" onclick="scan()">⟳ Scan</button>
+  <button class="btn primary" onclick="openEdit()">＋ New project</button>
+</header>
+<main>
+  <h2>Projects</h2>
+  <div class="card"><table>
+    <thead><tr><th>Status</th><th>Name</th><th>Tier</th><th>Port</th><th>URL</th><th></th></tr></thead>
+    <tbody id="projects"><tr><td colspan="6" class="empty">loading…</td></tr></tbody>
+  </table></div>
+
+  <div id="unclaimedWrap" style="display:none">
+    <h2>Unmanaged</h2>
+    <div class="card"><table>
+      <thead><tr><th>Port</th><th>PID</th><th>Command / cwd</th><th></th></tr></thead>
+      <tbody id="unclaimed"></tbody>
+    </table></div>
+  </div>
+
+  <div id="groupsWrap"></div>
+</main>
+
+<div class="overlay" id="editOverlay">
+  <div class="modal">
+    <h3 id="editTitle">New project</h3>
+    <div class="body">
+      <label>Name</label><input id="f_name" placeholder="my-project">
+      <label>Directory <span style="opacity:.6;font-weight:400">(optional — omit it e.g. if the project lives in another WSL instance)</span></label>
+      <div style="display:flex;gap:8px">
+        <input id="f_dir" placeholder="~/projects/... (optional)" style="flex:1">
+        <button class="btn" type="button" onclick="openFs()" title="browse">📁</button>
+      </div>
+      <label>Command</label><input id="f_cmd" placeholder="npm run dev">
+      <label>Preferred port</label><input id="f_port" type="number" placeholder="5173">
+      <label>Host (.localhost)</label><input id="f_host" placeholder="default = name">
+      <div style="display:flex;gap:12px">
+        <div style="flex:1"><label>Tier</label>
+          <select id="f_tier"><option value="ephemeral">ephemeral</option><option value="service">service (permanent)</option></select></div>
+        <div style="flex:1"><label>Group</label><input id="f_group" placeholder="optional"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="btn ghost" onclick="close_('editOverlay')">Cancel</button>
+      <button class="btn primary" onclick="saveProject()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="claimOverlay">
+  <div class="modal">
+    <h3>Adopt listener</h3>
+    <div class="body">
+      <div id="claimInfo" class="fsinfo"></div>
+      <label>Name</label><input id="claimName" placeholder="project-name">
+    </div>
+    <div class="foot">
+      <button class="btn ghost" onclick="close_('claimOverlay')">Cancel</button>
+      <button class="btn primary" onclick="doClaim()">Adopt</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="fsOverlay">
+  <div class="modal" style="width:min(680px,96vw)">
+    <h3>Choose directory</h3>
+    <div class="body">
+      <div id="fsCrumb" class="fscrumb"></div>
+      <div id="fsList" class="fslist"></div>
+    </div>
+    <div class="foot">
+      <span class="muted sub" id="fsCurrent" style="margin-right:auto"></span>
+      <button class="btn ghost" onclick="close_('fsOverlay')">Cancel</button>
+      <button class="btn primary" onclick="useFolder()">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="logOverlay">
+  <div class="modal" style="width:min(820px,96vw)">
+    <h3 id="logTitle">Logs</h3>
+    <div class="body"><div class="logbox" id="logbox"></div></div>
+    <div class="foot"><button class="btn ghost" onclick="closeLogs()">Close</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+let editingName=null, claimingPort=null, logSource=null, rows=[], showSystem=false;
+function toggleSystem(){showSystem=!showSystem;render()}
+
+function toast(msg,kind){const t=document.createElement('div');t.className=kind||'';t.textContent=msg;$('#toast').appendChild(t);setTimeout(()=>t.remove(),3500)}
+async function api(path,opts){const r=await fetch('/api'+path,opts);const d=await r.json().catch(()=>({}));if(!r.ok||d.error){throw new Error(d.error||('HTTP '+r.status))}return d}
+async function act(path,method='POST'){try{const d=await api(path,{method});toast('✓ '+path.split('/').slice(-1),'ok');refresh()}catch(e){toast('✗ '+e.message,'err')}}
+
+function tierBadge(t){return `<span class="badge ${t}">${t||''}</span>`}
+function render(){
+  const projects=rows.filter(r=>r.status!=='unclaimed');
+  const unclaimed=rows.filter(r=>r.status==='unclaimed');
+  const up=projects.filter(r=>r.status==='up').length;
+  const uncMng=unclaimed.filter(r=>!r.system).length;
+  const uncSys=unclaimed.length-uncMng;
+  $('#counts').textContent=`${projects.length} projects · ${up} running · ${uncMng} unmanaged`+(uncSys?` · ${uncSys} system`:'');
+
+  $('#projects').innerHTML = projects.length? projects.map(r=>{
+    const running=r.status==='up';
+    const toggle=running
+      ? `<button class="btn sm danger" onclick="act('/projects/${r.name}/stop')">■ Stop</button>`
+      : `<button class="btn sm" onclick="act('/projects/${r.name}/start')">▶ Start</button>`;
+    const tierBtn=r.tier==='service'
+      ? `<button class="btn sm icon ghost" title="demote" onclick="act('/projects/${r.name}/demote')">▼</button>`
+      : `<button class="btn sm icon ghost" title="promote" onclick="act('/projects/${r.name}/promote')">▲</button>`;
+    return `<tr class="row">
+      <td><span class="st ${r.status}"><span class="dot"></span>${r.status}</span>${r.source?` <span class="badge src">${r.source}</span>`:''}</td>
+      <td><div class="name">${r.name}</div><div class="sub">${r.stack||''} ${r.cwd?'· '+r.cwd:''}</div></td>
+      <td>${tierBadge(r.tier)}</td>
+      <td class="port">${r.port||'—'}</td>
+      <td>${running?`<a href="${r.local_url||r.url}" target="_blank">${(r.local_url||r.url).replace('http://','')}</a>`:'<span class="muted">'+(r.url||'').replace('http://','')+'</span>'}</td>
+      <td><div class="actions">
+        ${toggle}
+        ${running?`<button class="btn sm" onclick="openProject('${(r.local_url||r.url)}')" title="open in browser">↗ Open</button>`:''}
+        <button class="btn sm ghost" onclick="act('/projects/${r.name}/restart')" title="restart">↻</button>
+        ${tierBtn}
+        <button class="btn sm ghost" onclick="showLogs('${r.name}')" title="logs">≡</button>
+        <button class="btn sm ghost" onclick="editProject('${r.name}')" title="edit">✎</button>
+        <button class="btn sm ghost danger" onclick="delProject('${r.name}')" title="delete">🗑</button>
+      </div></td></tr>`}).join('') : `<tr><td colspan="6" class="empty">No projects yet. Click <b>Scan</b> or <b>New project</b>.</td></tr>`;
+
+  const managed=unclaimed.filter(r=>!r.system);
+  const system=unclaimed.filter(r=>r.system);
+  $('#unclaimedWrap').style.display=unclaimed.length?'block':'none';
+  let html=managed.map(r=>`<tr class="row">
+    <td class="port">${r.port}</td><td class="sub">${r.pid||'—'}</td>
+    <td class="sub">${r.docker?'🐳 ':''}${r.cmd||''}${r.cwd?'<br>'+r.cwd:''}</td>
+    <td><div class="actions">
+      <button class="btn sm" onclick="openProject('http://localhost:${r.port}')" title="open">↗ Open</button>
+      <button class="btn sm danger" onclick="act('/instances/${r.port}/stop')" title="stop">■ Stop</button>
+      <button class="btn sm ghost" onclick="act('/instances/${r.port}/restart')" title="restart">↻</button>
+      <button class="btn sm" onclick="openClaim(${r.port})" title="adopt">✚ Adopt</button>
+    </div></td></tr>`).join('');
+  if(system.length){
+    html+=`<tr class="sysrow"><td colspan="4" class="sub" style="cursor:pointer" onclick="toggleSystem()">
+      ${showSystem?'▾':'▸'} ${system.length} system ports (root, not manageable)</td></tr>`;
+    if(showSystem){
+      html+=system.map(r=>`<tr class="row sysitem">
+        <td class="port muted">${r.port}</td><td class="sub">—</td>
+        <td class="sub"><span class="badge">system</span></td>
+        <td class="sub muted">not manageable (root process)</td></tr>`).join('');
+    }
+  }
+  $('#unclaimed').innerHTML=html||'<tr><td colspan="4" class="empty">no external listeners</td></tr>';
+  renderGroups();
+}
+
+let groups=[];
+async function loadGroups(){try{groups=await api('/groups')||[]}catch(e){groups=[]}renderGroups()}
+function renderGroups(){
+  if(!groups.length){$('#groupsWrap').innerHTML='';return}
+  $('#groupsWrap').innerHTML='<h2>Groups</h2>'+groups.map(g=>`
+    <div class="card" style="margin-bottom:12px">
+      <div class="grouphdr"><span class="gname">${g.name}</span>
+        <span class="muted sub">${(g.projects||[]).join(', ')}</span><div class="grow"></div>
+        <button class="btn sm" onclick="act('/groups/${g.name}/up')">▶ Up</button>
+        <button class="btn sm danger" onclick="act('/groups/${g.name}/down')">■ Down</button>
+      </div></div>`).join('');
+}
+
+async function refresh(){try{rows=await api('/ps');render()}catch(e){}}
+function connectSSE(){
+  const es=new EventSource('/api/events');
+  es.onmessage=e=>{try{rows=JSON.parse(e.data);render();setDaemon(true)}catch(_){}}
+  es.onerror=()=>{setDaemon(false);es.close();setTimeout(connectSSE,3000)}
+}
+function setDaemon(ok){$('#daemonDot').className='dot'+(ok?'':' off')}
+
+// --- CRUD ---
+function openEdit(){editingName=null;$('#editTitle').textContent='New project';
+  ['name','dir','cmd','port','host','group'].forEach(k=>$('#f_'+k).value='');$('#f_tier').value='ephemeral';show('editOverlay')}
+function editProject(name){const r=rows.find(x=>x.name===name);editingName=name;$('#editTitle').textContent='Edit '+name;
+  $('#f_name').value=name;$('#f_dir').value=r.cwd||'';$('#f_cmd').value=r.cmd||'';$('#f_port').value=r.port||'';
+  $('#f_host').value='';$('#f_group').value=r.group||'';$('#f_tier').value=r.tier||'ephemeral';show('editOverlay')}
+async function saveProject(){
+  const body={name:$('#f_name').value.trim(),dir:$('#f_dir').value.trim(),
+    cmd:$('#f_cmd').value.trim()?$('#f_cmd').value.trim().split(/\s+/):[],
+    prefer_port:parseInt($('#f_port').value)||0,host:$('#f_host').value.trim(),
+    tier:$('#f_tier').value,group:$('#f_group').value.trim(),kind:'native'};
+  try{await api('/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    toast('✓ saved','ok');close_('editOverlay');refresh()}catch(e){toast('✗ '+e.message,'err')}
+}
+async function delProject(name){if(!confirm('Delete '+name+'?'))return;
+  try{await api('/projects/'+name,{method:'DELETE'});toast('✓ deleted','ok');refresh()}catch(e){toast('✗ '+e.message,'err')}}
+function openClaim(port){
+  claimingPort=port;
+  const r=rows.find(x=>x.status==='unclaimed'&&x.port===port)||{};
+  const cwd=r.cwd||'', cmd=r.cmd||'', pid=r.pid||'';
+  $('#claimInfo').innerHTML=
+    `<div><span class="k">port</span><span class="v">:${port}</span></div>`+
+    (pid?`<div><span class="k">pid</span><span class="v">${pid}</span></div>`:'')+
+    (cmd?`<div><span class="k">cmd</span><span class="v">${cmd}</span></div>`:'')+
+    (cwd?`<div><span class="k">cwd</span><span class="v">${cwd}</span></div>`
+        :`<div class="muted">No visible cwd (process owned by another user or requires root). Identify it by port/cmd.</div>`);
+  // suggest a name from the cwd or the cmd
+  let sug=cwd?cwd.split('/').filter(Boolean).pop():'';
+  if(!sug&&cmd) sug=cmd.split(/[\s/]+/).filter(Boolean).pop();
+  $('#claimName').value=sug||('port-'+port);
+  show('claimOverlay');
+}
+
+// --- file browser ---
+let fsPath=null;
+async function openFs(){fsPath=$('#f_dir').value.trim()||null;await loadFs(fsPath);show('fsOverlay')}
+async function loadFs(path){
+  try{
+    const q=path?('?path='+encodeURIComponent(path)):'';
+    const d=await api('/fs'+q);
+    fsPath=d.path;
+    $('#fsCurrent').textContent=d.path;
+    $('#fsCrumb').innerHTML=`<a onclick="loadFs('${d.parent}')">⬆ ${d.parent}</a>`;
+    $('#fsList').innerHTML=(d.entries||[]).map(e=>
+      `<div class="fsrow" onclick="loadFs('${e.path.replace(/'/g,"\\'")}')">
+        <span class="fic">📁</span><span class="fname">${e.name}</span>
+        ${e.stack?`<span class="fstack">${e.stack}</span>`:''}</div>`).join('')
+      || '<div class="fsrow muted">(no subfolders)</div>';
+  }catch(e){toast('✗ '+e.message,'err')}
+}
+async function useFolder(){
+  $('#f_dir').value=fsPath;
+  close_('fsOverlay');
+  // prefill name + cmd + port via stack detection
+  if(!$('#f_name').value.trim()) $('#f_name').value=fsPath.split('/').filter(Boolean).pop();
+  try{
+    const det=await api('/detect?path='+encodeURIComponent(fsPath));
+    if(det.ok){
+      if(!$('#f_cmd').value.trim()&&det.cmd) $('#f_cmd').value=det.cmd.join(' ');
+      if(!$('#f_port').value&&det.prefer_port) $('#f_port').value=det.prefer_port;
+      toast('✓ stack: '+det.stack,'ok');
+    }
+  }catch(_){}
+}
+async function doClaim(){try{await api('/claim',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({port:claimingPort,name:$('#claimName').value.trim()})});
+  toast('✓ adopted','ok');close_('claimOverlay');refresh()}catch(e){toast('✗ '+e.message,'err')}}
+async function scan(){try{const a=await api('/scan',{method:'POST'});toast('✓ '+((a||[]).length)+' new','ok');refresh()}catch(e){toast('✗ '+e.message,'err')}}
+
+// --- logs ---
+function showLogs(name){$('#logTitle').textContent='Logs · '+name;$('#logbox').textContent='';show('logOverlay');
+  logSource=new EventSource('/api/logs/stream?name='+encodeURIComponent(name));
+  logSource.onmessage=e=>{const b=$('#logbox');b.textContent+=e.data+'\n';b.scrollTop=b.scrollHeight}}
+function closeLogs(){if(logSource){logSource.close();logSource=null}close_('logOverlay')}
+
+function openProject(url){window.open(url,'_blank')}
+function show(id){$('#'+id).classList.add('show')}
+function close_(id){$('#'+id).classList.remove('show')}
+
+connectSSE();loadGroups();refresh();setInterval(loadGroups,5000);
+</script>
+</body>
+</html>
