@@ -39,21 +39,21 @@ func New(paths config.Paths, store *registry.Store, roots []string) *Service {
 type Row struct {
 	Name     string `json:"name"`
 	Port     int    `json:"port"`
-	URL      string `json:"url"`             // http://<host>.localhost (via proxy)
+	URL      string `json:"url"`                 // http://<host>.localhost (via proxy)
 	LocalURL string `json:"local_url,omitempty"` // http://localhost:<port> (direct, always works)
 	Tier     string `json:"tier"`
-	Status string `json:"status"` // up | down | unclaimed
-	Kind   string `json:"kind"`
-	Stack  string `json:"stack,omitempty"`
-	Source string `json:"source,omitempty"`
-	PID    int    `json:"pid,omitempty"`
-	Unit   string `json:"unit,omitempty"`
-	Group  string `json:"group,omitempty"`
-	Cmd    string `json:"cmd,omitempty"`
-	Cwd    string `json:"cwd,omitempty"`
-	Docker bool   `json:"docker,omitempty"`
-	Draft  bool   `json:"draft,omitempty"`
-	System bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
+	Status   string `json:"status"` // up | down | unclaimed
+	Kind     string `json:"kind"`
+	Stack    string `json:"stack,omitempty"`
+	Source   string `json:"source,omitempty"`
+	PID      int    `json:"pid,omitempty"`
+	Unit     string `json:"unit,omitempty"`
+	Group    string `json:"group,omitempty"`
+	Cmd      string `json:"cmd,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
+	Docker   bool   `json:"docker,omitempty"`
+	Draft    bool   `json:"draft,omitempty"`
+	System   bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
 }
 
 // PS returns the docker-ps-like unified table: every registered project plus
@@ -193,14 +193,14 @@ func statusRank(s string) int {
 func (s *Service) Start(name string, opts runner.LaunchOpts) (runner.Result, error) {
 	return s.Run.Start(name, opts)
 }
-func (s *Service) Stop(name string) error    { return s.Run.Stop(name) }
+func (s *Service) Stop(name string) error { return s.Run.Stop(name) }
 func (s *Service) Restart(name string, opts runner.LaunchOpts) (runner.Result, error) {
 	return s.Run.Restart(name, opts)
 }
-func (s *Service) Promote(name string) error { return s.Run.Promote(name) }
-func (s *Service) Demote(name string) error  { return s.Run.Demote(name) }
+func (s *Service) Promote(name string) error                { return s.Run.Promote(name) }
+func (s *Service) Demote(name string) error                 { return s.Run.Demote(name) }
 func (s *Service) Up(group string) ([]runner.Result, error) { return s.Run.Up(group) }
-func (s *Service) Down(group string) error   { return s.Run.Down(group) }
+func (s *Service) Down(group string) error                  { return s.Run.Down(group) }
 func (s *Service) RunAdhoc(dir string, cmd []string, opts runner.AdhocOpts) (runner.Result, error) {
 	return s.Run.RunAdhoc(dir, cmd, opts)
 }
@@ -287,9 +287,9 @@ func (s *Service) Scan() ([]registry.Project, error) {
 
 // --- groups --------------------------------------------------------------
 
-func (s *Service) Groups() []registry.Group          { return s.Store.Groups() }
-func (s *Service) SetGroup(g registry.Group) error   { return s.Store.UpsertGroup(g) }
-func (s *Service) RemoveGroup(name string) error     { return s.Store.RemoveGroup(name) }
+func (s *Service) Groups() []registry.Group        { return s.Store.Groups() }
+func (s *Service) SetGroup(g registry.Group) error { return s.Store.UpsertGroup(g) }
+func (s *Service) RemoveGroup(name string) error   { return s.Store.RemoveGroup(name) }
 
 // Logs returns the last n lines of a project's log file.
 func (s *Service) Logs(name string, n int) (string, error) {

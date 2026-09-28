@@ -24,14 +24,14 @@ const (
 
 // Instance is one live listener attributed (or not) to a project.
 type Instance struct {
-	Project string `json:"project"` // "" when unclaimed
-	Port    int    `json:"port"`
-	PID     int    `json:"pid"`
-	Cmd     string `json:"cmd"`
-	Cwd     string `json:"cwd"`
-	Unit    string `json:"unit"`   // systemd unit (pm-<name>.scope) if any
-	Source  Source `json:"source"`
-	Docker  bool   `json:"docker"`
+	Project   string `json:"project"` // "" when unclaimed
+	Port      int    `json:"port"`
+	PID       int    `json:"pid"`
+	Cmd       string `json:"cmd"`
+	Cwd       string `json:"cwd"`
+	Unit      string `json:"unit"` // systemd unit (pm-<name>.scope) if any
+	Source    Source `json:"source"`
+	Docker    bool   `json:"docker"`
 	Container string `json:"container,omitempty"` // docker container id/name, if Docker
 }
 

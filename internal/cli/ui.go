@@ -22,8 +22,8 @@ const (
 
 var (
 	// Status colors.
-	styleUp        = lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // green
-	styleDown      = lipgloss.NewStyle().Faint(true)                      // dim/gray
+	styleUp        = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
+	styleDown      = lipgloss.NewStyle().Faint(true)                       // dim/gray
 	styleUnclaimed = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // amber
 
 	// Field styles.

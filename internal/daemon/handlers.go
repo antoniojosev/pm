@@ -73,11 +73,11 @@ func (d *Daemon) hBrowse(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) hDetect(w http.ResponseWriter, r *http.Request) {
 	det, ok := d.svc.DetectPath(r.URL.Query().Get("path"))
 	writeJSON(w, 200, map[string]any{
-		"ok":           ok,
-		"stack":        det.Stack,
-		"cmd":          det.Cmd,
-		"prefer_port":  det.PreferPort,
-		"kind":         det.Kind,
+		"ok":          ok,
+		"stack":       det.Stack,
+		"cmd":         det.Cmd,
+		"prefer_port": det.PreferPort,
+		"kind":        det.Kind,
 	})
 }
 

@@ -50,8 +50,8 @@ const (
 // the underlying error so main can exit non-zero.
 func Execute() error {
 	root := &cobra.Command{
-		Use:     "pm",
-		Short:   "pm — local project & port manager",
+		Use:   "pm",
+		Short: "pm — local project & port manager",
 		Long: styleBrand.Render("pm") + styleDim.Render(" — local project & port manager") + `
 
 Launches projects, knows what's running and on which port, and routes <name>.localhost.
