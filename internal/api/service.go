@@ -60,7 +60,7 @@ type Row struct {
 // any live listener not attributable to one (unclaimed).
 func (s *Service) PS() ([]Row, error) {
 	_ = s.Store.Reload()
-	insts, err := s.Run.Det.Snapshot()
+	insts, err := s.Run.Snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (s *Service) List() []registry.Project                 { return s.Store.Lis
 
 // Claim adopts a live unclaimed listener into the registry.
 func (s *Service) Claim(port int, name string) (registry.Project, error) {
-	insts, err := s.Run.Det.Snapshot()
+	insts, err := s.Run.Snapshot()
 	if err != nil {
 		return registry.Project{}, err
 	}
@@ -315,7 +315,7 @@ func (s *Service) LogPath(name string) string { return s.Paths.LogFile(name) }
 // back to its preferred port, then to the .localhost hostname.
 func (s *Service) BestURL(name string) (string, error) {
 	_ = s.Store.Reload()
-	insts, _ := s.Run.Det.Snapshot()
+	insts, _ := s.Run.Snapshot()
 	best := detector.Instance{}
 	for _, i := range insts {
 		if strings.EqualFold(i.Project, name) && i.Port != 0 {

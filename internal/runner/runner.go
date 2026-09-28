@@ -24,7 +24,15 @@ type Runner struct {
 	Paths config.Paths
 	Store *registry.Store
 	Det   detector.Detector
+	// Snap overrides Det.Snapshot when set (tests inject fake live state).
+	Snap func() ([]detector.Instance, error)
+	// PortWait bounds how long a launch waits for the unit to bind a port.
+	PortWait time.Duration
 }
+
+// execCommand is the seam through which every external binary (systemctl,
+// systemd-run, docker) is invoked; tests swap it for a fake.
+var execCommand = exec.Command
 
 // New builds a Runner wired to the shared store, with a detector that
 // resolves external processes against the registry by cwd.
@@ -37,7 +45,15 @@ func New(paths config.Paths, store *registry.Store) *Runner {
 			return "", "", false
 		},
 	}
-	return &Runner{Paths: paths, Store: store, Det: det}
+	return &Runner{Paths: paths, Store: store, Det: det, PortWait: 8 * time.Second}
+}
+
+// Snapshot returns the live listeners, via Snap when injected.
+func (r *Runner) Snapshot() ([]detector.Instance, error) {
+	if r.Snap != nil {
+		return r.Snap()
+	}
+	return r.Det.Snapshot()
 }
 
 // LaunchOpts tweak a single start.
@@ -78,23 +94,11 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	}
 	res := Result{Project: p.Name, Unit: UnitName(p.Name)}
 
-	// Resolve port (native only; docker keeps its compose mapping).
-	port := opts.Port
-	if port == 0 {
-		port = p.PreferPort
+	port, note, err := resolvePort(p, opts, r.occupiedPorts())
+	if err != nil {
+		return Result{}, err
 	}
-	if p.Kind == registry.KindNative && port != 0 {
-		occupied := r.occupiedPorts()
-		if occupied[port] {
-			if opts.Force {
-				return Result{}, fmt.Errorf("port %d is taken (--force)", port)
-			}
-			free := nextFree(port, occupied)
-			res.Note = fmt.Sprintf("port %d taken → using %d", port, free)
-			port = free
-		}
-	}
-	res.Port = port
+	res.Port, res.Note = port, note
 
 	cmd, env := applyPort(p, port)
 
@@ -115,7 +119,7 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	}
 
 	// Discover the actual bound port if we didn't fix one.
-	if actual := r.waitForPort(p.Name, 8*time.Second); actual != 0 {
+	if actual := r.waitForPort(p.Name, r.PortWait); actual != 0 {
 		res.Port = actual
 	}
 	res.URL = "http://" + p.Hostname()
@@ -141,7 +145,7 @@ func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
 	}
 	args = append(args, "--")
 	args = append(args, cmd...)
-	out, err := exec.Command("systemd-run", args...).CombinedOutput()
+	out, err := execCommand("systemd-run", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemd-run failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -166,13 +170,13 @@ func (r *Runner) Stop(name string) error {
 
 // stopExternal stops a process pm did not launch (adopted via `pm claim`).
 func (r *Runner) stopExternal(name string) error {
-	insts, _ := r.Det.Snapshot()
+	insts, _ := r.Snapshot()
 	for _, i := range insts {
 		if !strings.EqualFold(i.Project, name) {
 			continue
 		}
 		if i.Docker && i.Container != "" {
-			if out, err := exec.Command("docker", "stop", i.Container).CombinedOutput(); err != nil {
+			if out, err := execCommand("docker", "stop", i.Container).CombinedOutput(); err != nil {
 				return fmt.Errorf("docker stop %s: %v: %s", i.Container, err, strings.TrimSpace(string(out)))
 			}
 			return nil
@@ -191,7 +195,7 @@ func (r *Runner) stopExternal(name string) error {
 func (r *Runner) StopInstance(port int) error {
 	for _, i := range r.instancesOnPort(port) {
 		if i.Docker && i.Container != "" {
-			if out, err := exec.Command("docker", "stop", i.Container).CombinedOutput(); err != nil {
+			if out, err := execCommand("docker", "stop", i.Container).CombinedOutput(); err != nil {
 				return fmt.Errorf("docker stop: %v: %s", err, strings.TrimSpace(string(out)))
 			}
 			return nil
@@ -211,7 +215,7 @@ func (r *Runner) StopInstance(port int) error {
 func (r *Runner) RestartInstance(port int) (Result, error) {
 	for _, i := range r.instancesOnPort(port) {
 		if i.Docker && i.Container != "" {
-			if out, err := exec.Command("docker", "restart", i.Container).CombinedOutput(); err != nil {
+			if out, err := execCommand("docker", "restart", i.Container).CombinedOutput(); err != nil {
 				return Result{}, fmt.Errorf("docker restart: %v: %s", err, strings.TrimSpace(string(out)))
 			}
 			return Result{Project: i.Project, Port: port, Note: "docker restart"}, nil
@@ -238,7 +242,7 @@ func (r *Runner) RestartInstance(port int) (Result, error) {
 }
 
 func (r *Runner) instancesOnPort(port int) []detector.Instance {
-	insts, _ := r.Det.Snapshot()
+	insts, _ := r.Snapshot()
 	var out []detector.Instance
 	for _, i := range insts {
 		if i.Port == port {
@@ -317,15 +321,40 @@ func (r *Runner) Down(group string) error {
 
 // IsActive reports whether the project's unit is running.
 func (r *Runner) IsActive(name string) bool {
-	out, _ := exec.Command("systemctl", "--user", "is-active", UnitName(name)).Output()
+	out, _ := execCommand("systemctl", "--user", "is-active", UnitName(name)).Output()
 	return strings.TrimSpace(string(out)) == "active"
 }
 
 // --- port helpers --------------------------------------------------------
 
+// resolvePort picks the port a launch will use. An explicit opts.Port wins
+// over the project's PreferPort. Native projects whose port is already taken
+// are bumped to the next free one (or refused with opts.Force); docker
+// projects keep their compose mapping untouched. A zero port means "let the
+// stack choose" and is discovered after launch.
+func resolvePort(p registry.Project, opts LaunchOpts, occupied map[int]bool) (port int, note string, err error) {
+	port = opts.Port
+	if port == 0 {
+		port = p.PreferPort
+	}
+	if p.Kind != registry.KindNative || port == 0 || !occupied[port] {
+		return port, "", nil
+	}
+	if opts.Force {
+		return 0, "", fmt.Errorf("port %d is taken (--force)", port)
+	}
+	free := nextFree(port, occupied)
+	return free, fmt.Sprintf("port %d taken → using %d", port, free), nil
+}
+
 func (r *Runner) occupiedPorts() map[int]bool {
+	insts, _ := r.Snapshot()
+	return occupiedFrom(insts)
+}
+
+// occupiedFrom collects every bound port from a live snapshot.
+func occupiedFrom(insts []detector.Instance) map[int]bool {
 	occ := map[int]bool{}
-	insts, _ := r.Det.Snapshot()
 	for _, i := range insts {
 		if i.Port != 0 {
 			occ[i.Port] = true
@@ -338,7 +367,7 @@ func (r *Runner) occupiedPorts() map[int]bool {
 func (r *Runner) waitForPort(name string, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		insts, _ := r.Det.Snapshot()
+		insts, _ := r.Snapshot()
 		for _, i := range insts {
 			if strings.EqualFold(i.Project, name) && i.Port != 0 {
 				return i.Port
@@ -447,7 +476,7 @@ func shellJoin(cmd []string) string {
 
 func systemctl(args ...string) error {
 	full := append([]string{"--user"}, args...)
-	out, err := exec.Command("systemctl", full...).CombinedOutput()
+	out, err := execCommand("systemctl", full...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

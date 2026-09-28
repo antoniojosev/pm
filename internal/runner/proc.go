@@ -2,7 +2,6 @@ package runner
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,7 +12,7 @@ import (
 // (running or otherwise). A not-found unit returns false, so Stop can fall
 // back to killing an externally-launched process.
 func unitExists(unit string) bool {
-	out, _ := exec.Command("systemctl", "--user", "show", unit, "-p", "LoadState", "--value").Output()
+	out, _ := execCommand("systemctl", "--user", "show", unit, "-p", "LoadState", "--value").Output()
 	return strings.TrimSpace(string(out)) == "loaded"
 }
 
