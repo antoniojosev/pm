@@ -20,6 +20,13 @@ func (d Detector) dockerListeners() []Instance {
 	if err != nil {
 		return nil
 	}
+	return parseDockerPS(out)
+}
+
+// parseDockerPS converts `docker ps --format '{{json .}}'` lines into one
+// Instance per published host port, attributed to the compose project (or
+// the container name when the container is not part of a compose stack).
+func parseDockerPS(out string) []Instance {
 	var res []Instance
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)

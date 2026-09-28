@@ -5,8 +5,9 @@ import (
 	"strings"
 )
 
-// run executes a command and returns trimmed stdout, or an error.
-func run(name string, args ...string) (string, error) {
+// run executes a command and returns trimmed stdout, or an error. It is a
+// variable so tests can feed canned `ss` / `docker ps` output.
+var run = func(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {

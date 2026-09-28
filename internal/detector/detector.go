@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/antoniojosev/pm/internal/config"
 )
 
 // Source describes how an instance was identified, ranked by confidence.
@@ -66,8 +68,32 @@ func (d Detector) nativeListeners() ([]Instance, error) {
 		// ss missing or failed; return nothing rather than erroring hard.
 		return nil, nil
 	}
-	seen := map[string]bool{} // dedupe by port+pid
 	var res []Instance
+	for _, l := range parseSS(out) {
+		if len(l.PIDs) == 0 {
+			// listening but we can't see the pid (not ours / needs root)
+			res = append(res, Instance{Port: l.Port, Source: SourceUnknown})
+			continue
+		}
+		for _, pid := range l.PIDs {
+			res = append(res, d.attribute(l.Port, pid))
+		}
+	}
+	return res, nil
+}
+
+// listener is one LISTEN socket as reported by ss: a port and the pids that
+// hold it (empty when the socket belongs to another user).
+type listener struct {
+	Port int
+	PIDs []int
+}
+
+// parseSS turns `ss -Htlnp` output into listeners, deduplicating by port+pid
+// (a socket bound on both v4 and v6 shows up twice).
+func parseSS(out string) []listener {
+	seen := map[string]bool{}
+	var res []listener
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -83,24 +109,27 @@ func (d Detector) nativeListeners() ([]Instance, error) {
 		}
 		pids := parsePIDs(line)
 		if len(pids) == 0 {
-			// listening but we can't see the pid (not ours / needs root)
 			key := strconv.Itoa(port) + ":0"
 			if !seen[key] {
 				seen[key] = true
-				res = append(res, Instance{Port: port, Source: SourceUnknown})
+				res = append(res, listener{Port: port})
 			}
 			continue
 		}
+		var fresh []int
 		for _, pid := range pids {
 			key := strconv.Itoa(port) + ":" + strconv.Itoa(pid)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			res = append(res, d.attribute(port, pid))
+			fresh = append(fresh, pid)
+		}
+		if len(fresh) > 0 {
+			res = append(res, listener{Port: port, PIDs: fresh})
 		}
 	}
-	return res, nil
+	return res
 }
 
 // attribute resolves a (port, pid) into a fully described Instance.
@@ -161,7 +190,12 @@ func procUnit(pid int) (unit, name string) {
 	if err != nil {
 		return "", ""
 	}
-	if m := unitRe.FindStringSubmatch(string(b)); m != nil {
+	return unitFromCgroup(string(b))
+}
+
+// unitFromCgroup finds a pm-<name>.scope|service anywhere in a cgroup file.
+func unitFromCgroup(content string) (unit, name string) {
+	if m := unitRe.FindStringSubmatch(content); m != nil {
 		return "pm-" + m[1] + "." + m[2], m[1]
 	}
 	return "", ""
@@ -173,8 +207,13 @@ func procMarker(pid int) string {
 	if err != nil {
 		return ""
 	}
-	for _, kv := range strings.Split(string(b), "\x00") {
-		if v, ok := strings.CutPrefix(kv, "PM_PROJECT="); ok {
+	return markerFromEnviron(string(b))
+}
+
+// markerFromEnviron extracts PM_PROJECT from a NUL-separated environ block.
+func markerFromEnviron(content string) string {
+	for _, kv := range strings.Split(content, "\x00") {
+		if v, ok := strings.CutPrefix(kv, config.EnvMarker+"="); ok {
 			return v
 		}
 	}
