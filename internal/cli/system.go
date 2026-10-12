@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antoniojosev/pm/internal/api"
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/proxy"
+	"github.com/antoniojosev/pm/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -42,9 +45,50 @@ func doctorCmd() *cobra.Command {
 				out, err := exec.Command("curl", "-s", config.DaemonURL()+"/api/v1/health").Output()
 				return config.DaemonURL(), err == nil && strings.Contains(string(out), "ok")
 			})
+			check("api", func() (string, bool) { return apiCheck(config.DaemonURL()) })
 			return nil
 		},
 	}
+}
+
+// apiCheck asks the daemon for GET /api/v1/version and summarises it: release,
+// API generation and the capabilities the daemon sees. It fails when the daemon
+// is unreachable or speaks a different API generation than this CLI.
+func apiCheck(baseURL string) (string, bool) {
+	info, err := fetchVersion(baseURL)
+	if err != nil {
+		return "daemon not reachable (" + err.Error() + ")", false
+	}
+	yn := func(b bool) string {
+		if b {
+			return "yes"
+		}
+		return "no"
+	}
+	detail := fmt.Sprintf("pm %s · api %d · caddy %s · docker %s · systemd %s",
+		info.Version, info.API, yn(info.Caddy), yn(info.Docker), yn(info.Systemd))
+	if info.API != version.API {
+		return fmt.Sprintf("%s (this CLI expects api %d)", detail, version.API), false
+	}
+	return detail, true
+}
+
+// fetchVersion reads /api/v1/version from the daemon at baseURL.
+func fetchVersion(baseURL string) (api.VersionInfo, error) {
+	var info api.VersionInfo
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(strings.TrimRight(baseURL, "/") + "/api/v1/version")
+	if err != nil {
+		return info, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return info, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return info, fmt.Errorf("bad response: %w", err)
+	}
+	return info, nil
 }
 
 func check(name string, fn func() (string, bool)) {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/antoniojosev/pm/internal/api"
 	"github.com/antoniojosev/pm/internal/registry"
+	"github.com/antoniojosev/pm/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -277,8 +280,58 @@ func TestCLIErrorsAreFriendly(t *testing.T) {
 func TestVersionFlag(t *testing.T) {
 	isolate(t)
 	out, _, err := run(t, "--version")
-	if err != nil || !strings.Contains(out, Version) {
+	if err != nil || !strings.Contains(out, version.Version) {
 		t.Fatalf("--version: %v %q", err, out)
+	}
+}
+
+func TestDoctorShowsDaemonVersion(t *testing.T) {
+	isolate(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/version" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"version":"9.9.9","api":1,"caddy":true,"docker":false,"systemd":true}`))
+	}))
+	defer srv.Close()
+	t.Setenv("PM_DAEMON_URL", srv.URL)
+
+	out, _, err := run(t, "doctor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "pm 9.9.9 · api 1 · caddy yes · docker no · systemd yes"
+	if !strings.Contains(out, want) {
+		t.Fatalf("doctor output lacks %q:\n%s", want, out)
+	}
+}
+
+func TestAPICheck(t *testing.T) {
+	isolate(t)
+	serve := func(body string, code int) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+
+	if d, ok := apiCheck(serve(`{"version":"1","api":1}`, 200)); !ok || !strings.Contains(d, "api 1") {
+		t.Errorf("matching api = %q, %v", d, ok)
+	}
+	if d, ok := apiCheck(serve(`{"version":"2","api":2}`, 200)); ok || !strings.Contains(d, "expects api 1") {
+		t.Errorf("other api generation = %q, %v", d, ok)
+	}
+	if d, ok := apiCheck(serve(`not json`, 200)); ok || !strings.Contains(d, "bad response") {
+		t.Errorf("garbage body = %q, %v", d, ok)
+	}
+	if d, ok := apiCheck(serve(`nope`, 404)); ok || !strings.Contains(d, "HTTP 404") {
+		t.Errorf("old daemon without /version = %q, %v", d, ok)
+	}
+	if d, ok := apiCheck("http://127.0.0.1:1"); ok || !strings.Contains(d, "not reachable") {
+		t.Errorf("no daemon = %q, %v", d, ok)
 	}
 }
 

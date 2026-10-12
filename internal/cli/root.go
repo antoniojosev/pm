@@ -11,11 +11,9 @@ import (
 	"github.com/antoniojosev/pm/internal/api"
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/registry"
+	"github.com/antoniojosev/pm/internal/version"
 	"github.com/spf13/cobra"
 )
-
-// Version is stamped at build time.
-var Version = "0.1.0"
 
 func svc() (*api.Service, error) {
 	paths := config.Resolve()
@@ -60,7 +58,7 @@ Examples:
   pm ps                  see what's running now, grouped by status
   pm run -- npm run dev  launch the cwd (auto-registers and detects the port)
   pm start web           start a registered project`,
-		Version:       Version,
+		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

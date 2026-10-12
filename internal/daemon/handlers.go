@@ -57,6 +57,7 @@ func (d *Daemon) apiRoutes() []Route {
 		{"GET", "/fs", d.hBrowse},
 		{"GET", "/detect", d.hDetect},
 		{"GET", "/health", d.hHealth},
+		{"GET", "/version", d.hVersion},
 	}
 }
 
@@ -97,6 +98,10 @@ func deprecated(h http.HandlerFunc) http.HandlerFunc {
 
 func (d *Daemon) hHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+func (d *Daemon) hVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, d.svc.Version())
 }
 
 func (d *Daemon) hInstanceStop(w http.ResponseWriter, r *http.Request) {
