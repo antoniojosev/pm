@@ -1,5 +1,6 @@
 # pm — local project & port manager
 
+[![CI](https://github.com/antoniojosev/pm/actions/workflows/ci.yml/badge.svg)](https://github.com/antoniojosev/pm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/antoniojosev/pm)](go.mod)
 [![Release](https://img.shields.io/github/v/release/antoniojosev/pm?include_prereleases)](https://github.com/antoniojosev/pm/releases)
