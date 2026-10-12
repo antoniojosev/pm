@@ -60,11 +60,14 @@ type Row struct {
 	PID     int    `json:"pid,omitempty"`
 	Unit    string `json:"unit,omitempty"`
 	Group   string `json:"group,omitempty"`
-	Cmd     string `json:"cmd,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
-	Docker  bool   `json:"docker,omitempty"`
-	Draft   bool   `json:"draft,omitempty"`
-	System  bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
+	// Owner is who the project belongs to; set for processes started by
+	// specification (pm run).
+	Owner  string `json:"owner,omitempty"`
+	Cmd    string `json:"cmd,omitempty"`
+	Cwd    string `json:"cwd,omitempty"`
+	Docker bool   `json:"docker,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
+	System bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
 }
 
 // PS returns the docker-ps-like unified table: every registered project plus
@@ -93,7 +96,7 @@ func (s *Service) PS() ([]Row, error) {
 		}
 	}
 
-	failed := s.Run.FailedUnits()
+	units := s.Run.UnitStates()
 	var rows []Row
 	registered := map[string]bool{}
 	consumed := map[int]bool{} // live ports already linked to a registered project
@@ -110,6 +113,10 @@ func (s *Service) PS() ([]Row, error) {
 			Cwd:   p.Dir,
 			Draft: p.Draft,
 			Port:  p.PreferPort,
+			Owner: p.Owner,
+		}
+		if p.IsRun() && len(p.Run.Ports) > 0 {
+			r.Port = p.Run.Ports[0] // the port it was told to use, bound or not
 		}
 		// match a live listener: first by attributed name, then by the
 		// project's preferred port (so claimed/port-only projects link too).
@@ -130,11 +137,20 @@ func (s *Service) PS() ([]Row, error) {
 				r.LocalURL = fmt.Sprintf("http://localhost:%d", inst.Port)
 				consumed[inst.Port] = true
 			}
-		} else if reason, bad := failed[runner.UnitName(p.Name)]; bad {
+		} else if st, loaded := units[runner.UnitName(p.Name)]; loaded && st.Active == "failed" {
 			// The unit died and systemd still holds it failed (e.g. the kernel
 			// OOM-killed it under its memory limit). Not the same as a clean stop.
 			r.Status = "failed"
-			r.Failure = reason
+			r.Failure = st.Result
+		} else if loaded && p.IsRun() && (st.Active == "active" || st.Active == "activating") {
+			// A run need not listen on anything (a worker, a script): the
+			// listener scan cannot see it, so its unit says whether it lives.
+			r.Status = "up"
+			r.PID = st.PID
+			r.Unit = runner.UnitName(p.Name)
+			if r.Port != 0 {
+				r.LocalURL = fmt.Sprintf("http://localhost:%d", r.Port)
+			}
 		} else {
 			r.Status = "down"
 		}
@@ -248,7 +264,12 @@ func (s *Service) Add(p registry.Project) error {
 
 func (s *Service) Edit(p registry.Project) error { return s.Store.Upsert(p) }
 func (s *Service) Remove(name string) error {
-	_ = s.Run.Stop(name)
+	_ = s.Store.Reload()
+	p, found := s.Store.Get(name)
+	stopErr := s.Run.Stop(name)
+	if found && p.IsRun() {
+		return stopErr // stopping a run already forgot it; if it failed, the record is still there
+	}
 	return s.Store.Remove(name)
 }
 func (s *Service) Get(name string) (registry.Project, bool) { return s.Store.Get(name) }
@@ -312,7 +333,7 @@ func (s *Service) RemoveGroup(name string) error   { return s.Store.RemoveGroup(
 
 // Logs returns the last n lines of a project's log file.
 func (s *Service) Logs(name string, n int) (string, error) {
-	b, err := os.ReadFile(s.Paths.LogFile(name))
+	b, err := os.ReadFile(s.LogPath(name))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -327,7 +348,7 @@ func (s *Service) Logs(name string, n int) (string, error) {
 }
 
 // LogPath exposes the log file path (for streaming tails).
-func (s *Service) LogPath(name string) string { return s.Paths.LogFile(name) }
+func (s *Service) LogPath(name string) string { return s.Run.LogPath(name) }
 
 // BestURL returns the most reliable URL to open a project: the direct
 // localhost:<port> if it's running (works with or without the proxy), falling

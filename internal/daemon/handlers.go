@@ -40,6 +40,7 @@ func (d *Daemon) apiRoutes() []Route {
 		{"GET", "/projects", d.hProjects},
 		{"POST", "/projects", d.hUpsertProject},
 		{"DELETE", "/projects/{name}", d.hDeleteProject},
+		{"POST", "/run", d.hRun},
 		{"POST", "/projects/{name}/start", d.hStart},
 		{"POST", "/projects/{name}/stop", d.hStop},
 		{"POST", "/projects/{name}/restart", d.hRestart},
@@ -182,6 +183,24 @@ func (d *Daemon) hDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, ok())
+}
+
+// hRun starts a process from a specification, without registering it. Unknown
+// fields are an error: a misspelt `limits` must not silently run uncapped.
+func (d *Daemon) hRun(w http.ResponseWriter, r *http.Request) {
+	var spec runner.RunSpec
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&spec); err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := d.svc.StartRun(spec)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, res)
 }
 
 func (d *Daemon) hStart(w http.ResponseWriter, r *http.Request) {

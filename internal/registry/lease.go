@@ -52,11 +52,27 @@ func (s *Store) Leases() []Lease {
 	return out
 }
 
-// LeasedPorts returns every port held by some lease.
+// LeasedPorts returns every port pm keeps for someone: those held by a lease
+// and those a run was told to use.
 func (s *Store) LeasedPorts() map[int]bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return leasedPorts(s.state.Leases)
+	return s.reserved()
+}
+
+// reserved is every port held by a lease or declared by a run. Caller holds
+// the lock.
+func (s *Store) reserved() map[int]bool {
+	out := leasedPorts(s.state.Leases)
+	for _, p := range s.state.Projects {
+		if p.Run == nil || p.Run.Released {
+			continue
+		}
+		for _, port := range p.Run.Ports {
+			out[port] = true
+		}
+	}
+	return out
 }
 
 // GetLease returns a lease by id.
@@ -81,7 +97,7 @@ func (s *Store) AddLease(owner string, pick func(leased map[int]bool) ([]int, er
 	}
 	var lease Lease
 	err := s.update(func() error {
-		ports, err := pick(leasedPorts(s.state.Leases))
+		ports, err := pick(s.reserved())
 		if err != nil {
 			return err
 		}

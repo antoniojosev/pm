@@ -3,8 +3,10 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/antoniojosev/pm/internal/api"
@@ -18,7 +20,7 @@ import (
 func Handler(svc *api.Service) http.Handler {
 	s := server.NewMCPServer("pm", "0.1.0",
 		server.WithToolCapabilities(true),
-		server.WithInstructions("pm manages local projects and their ports: list what's running, start/stop, promote to a permanent service, adopt ports, view logs and groups."),
+		server.WithInstructions("pm manages local projects and their ports: list what's running, start/stop, run a process by specification, promote to a permanent service, adopt ports, view logs and groups."),
 	)
 	register(s, svc)
 	return server.NewStreamableHTTPServer(s)
@@ -38,6 +40,30 @@ func register(s *server.MCPServer, svc *api.Service) {
 		mcp.WithNumber("port", mcp.Description("port to pin (0 = auto)"))),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			res, err := svc.Start(req.GetString("name", ""), runner.LaunchOpts{Port: req.GetInt("port", 0)})
+			return jsonResult(res, err)
+		})
+
+	s.AddTool(mcp.NewTool("pm_run",
+		mcp.WithDescription("Start a process from a specification without registering it. It runs as pm-<name>.service, shows in pm_list as an ephemeral row with its owner while it lives, and pm_stop stops it and forgets it. Returns {unit, pid, ports}."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("names the unit and what pm_stop takes: letters, digits, '.', '_' and '-'")),
+		mcp.WithString("dir", mcp.Required(), mcp.Description("working directory: an absolute path to an existing directory")),
+		mcp.WithArray("cmd", mcp.Required(), mcp.WithStringItems(), mcp.Description("the program and its arguments, as an argv (no shell)")),
+		mcp.WithObject("env", mcp.AdditionalProperties(map[string]any{"type": "string"}), mcp.Description("environment variables to add (PM_PROJECT is reserved); never stored")),
+		mcp.WithObject("limits",
+			mcp.Properties(map[string]any{
+				"memory": map[string]any{"type": "string", "description": "MemoryMax, e.g. 512M, 2G or 50%"},
+				"cpu":    map[string]any{"type": "string", "description": "CPUQuota as a percentage of one CPU, e.g. 150%"},
+			}),
+			mcp.Description("memory and CPU caps (needs cgroups v2)")),
+		mcp.WithString("log", mcp.Description("absolute path of the log file (default ~/.pm/logs/<name>.log)")),
+		mcp.WithString("owner", mcp.Description("who the process is for, e.g. a worktree or script name (default \"local\")")),
+		mcp.WithArray("ports", mcp.WithNumberItems(), mcp.Description("ports the process will use, e.g. from a lease; checked free and kept from other leases. pm does not pass them to the process: put them in env or cmd"))),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			spec, err := decodeRunSpec(req)
+			if err != nil {
+				return jsonResult(nil, err)
+			}
+			res, err := svc.StartRun(spec)
 			return jsonResult(res, err)
 		})
 
@@ -142,6 +168,23 @@ func register(s *server.MCPServer, svc *api.Service) {
 			err := svc.Down(req.GetString("group", ""))
 			return textResult("down", err)
 		})
+}
+
+// decodeRunSpec reads the tool arguments as a RunSpec, the same document
+// POST /api/v1/run takes. Unknown fields are an error, as there: a misspelt
+// "limits" must not silently run uncapped.
+func decodeRunSpec(req mcp.CallToolRequest) (runner.RunSpec, error) {
+	var spec runner.RunSpec
+	raw, err := json.Marshal(req.GetRawArguments())
+	if err != nil {
+		return spec, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&spec); err != nil {
+		return spec, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return spec, nil
 }
 
 func jsonResult(v any, err error) (*mcp.CallToolResult, error) {

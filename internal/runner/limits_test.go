@@ -253,7 +253,7 @@ func TestTransientLaunchSurvivesResetFailedErrors(t *testing.T) {
 
 func TestFailedUnitsReportsOnlyFailedPmUnits(t *testing.T) {
 	r, f := newTestRunner(t)
-	f.stdout["systemctl --user show pm-*.service -p Id -p ActiveState -p Result"] = "" +
+	f.stdout["systemctl --user show pm-*.service -p Id -p ActiveState -p Result -p MainPID"] = "" +
 		"Result=oom-kill\nId=pm-api.service\nActiveState=failed\n\n" +
 		"Result=success\nId=pm-web.service\nActiveState=active\n\n" +
 		"Result=exit-code\nId=pm-job.service\nActiveState=failed\n"

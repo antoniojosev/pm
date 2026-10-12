@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Tier describes how a project is expected to run.
@@ -129,16 +130,60 @@ type Project struct {
 	Group        string       `json:"group,omitempty"`
 	// Limits caps memory and CPU of the launched unit (needs cgroups v2).
 	Limits Limits `json:"limits,omitzero"`
+	// Owner is who the project belongs to: a worktree, a script, an agent. pm
+	// does not interpret it beyond grouping and listing. Empty for projects
+	// registered by hand.
+	Owner string `json:"owner,omitempty"`
+	// Run is set on the entry `pm run` / POST /run creates. Such an entry is
+	// not part of the catalog: it exists while the process does, and stopping
+	// it forgets it. See IsRun.
+	Run *RunInfo `json:"run,omitempty"`
 	// Draft marks entries produced by scan that the user has not confirmed.
 	Draft bool `json:"draft,omitempty"`
 }
 
-// Validate checks the project's own consistency: valid limits, and none on a
-// docker project, where the unit only wraps the `docker compose` client while
-// the containers live outside its cgroup, so a cap would do nothing.
+// RunInfo is what a run-by-specification keeps beyond the Project fields.
+// Nothing sensitive goes here: the environment of the run is handed to systemd
+// and never written to the registry.
+type RunInfo struct {
+	// Ports are the ports the process was told to use. While the run exists no
+	// lease of another owner receives them and pm's own launches steer clear.
+	Ports []int `json:"ports,omitempty"`
+	// Log is the file the process writes to, when it is not the default
+	// ~/.pm/logs/<name>.log.
+	Log string `json:"log,omitempty"`
+	// Nonce identifies this record among those of the same name over time. A
+	// launch that fails takes back its own record only (RemoveRun), never one a
+	// later run of the same name has written since.
+	Nonce string `json:"nonce,omitempty"`
+	// Started is when the record was written.
+	Started time.Time `json:"started,omitempty"`
+	// Launching is true from the moment the record is written until systemd has
+	// started the unit. In that window the unit is not active yet, but the run
+	// is not dead either: its name cannot be taken.
+	Launching bool `json:"launching,omitempty"`
+	// Released is true once pm saw the process gone and let go of its Ports:
+	// they no longer count as reserved. The record stays, so `pm ps` still
+	// shows how the run ended until it is stopped.
+	Released bool `json:"released,omitempty"`
+}
+
+// IsRun reports whether the entry was created by a run-by-specification
+// rather than registered.
+func (p Project) IsRun() bool { return p.Run != nil }
+
+// Validate checks the project's own consistency: valid limits, a valid owner
+// when there is one, and no limits on a docker project, where the unit only
+// wraps the `docker compose` client while the containers live outside its
+// cgroup, so a cap would do nothing.
 func (p Project) Validate() error {
 	if err := p.Limits.Validate(); err != nil {
 		return err
+	}
+	if p.Owner != "" {
+		if err := ValidateOwner(p.Owner); err != nil {
+			return err
+		}
 	}
 	if p.Kind == KindDocker && !p.Limits.IsZero() {
 		return fmt.Errorf("limits are not supported on docker projects: the unit only wraps the compose client, not the containers; set mem_limit and cpus in the compose file instead")

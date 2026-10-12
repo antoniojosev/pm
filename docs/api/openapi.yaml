@@ -118,6 +118,50 @@ paths:
       responses:
         "200": {$ref: "#/components/responses/OK"}
         "400": {$ref: "#/components/responses/Error"}
+  /run:
+    post:
+      tags: [processes]
+      operationId: run
+      summary: Start a process from a specification, without registering it
+      description: |
+        Launches `cmd` as the transient systemd unit `pm-<name>.service`, in
+        `dir`, with `env` added and `limits` applied. The process is not added
+        to the catalog: it shows in `GET /ps` as an `ephemeral` row with its
+        `owner` while it lives, `POST /projects/{name}/stop` stops it, and
+        stopping it forgets it, so nothing of it is left in the listing. It
+        cannot be started, restarted or promoted by name: run it again.
+
+        `ports` are the ports the process will use, typically those of a
+        lease. pm does not hand them to the process (put them in `env` or in
+        `cmd`, the way the stack wants them). It checks that each is free,
+        with no listener and a test bind that succeeds, and that none is
+        leased to a different owner or declared by another run. While the
+        process lives, other leases and the ports pm picks on its own avoid
+        them. If the process dies (exits, is killed, fails), pm lets go of its
+        ports the next time a lease or a launch needs them, without waiting for
+        `POST /projects/{name}/stop`; the record stays in `GET /ps` as `down`
+        or `failed` until it is stopped.
+        `GET /ps` reports the first one as the row's `port`, even before the
+        process binds it.
+
+        `name` must be free: a registered project, a run that is still alive or
+        one that is still being started refuses it, while the record of a run
+        that already exited is replaced. Two simultaneous requests for one
+        name: one starts, the other is refused.
+        The request body is strict: an unknown field is a 400. The environment
+        is handed to systemd and never stored by pm.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RunSpec"}
+      responses:
+        "200":
+          description: The unit that was started.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunResult"}
+        "400": {$ref: "#/components/responses/Error"}
   /projects/{name}/start:
     parameters:
       - {$ref: "#/components/parameters/Name"}
@@ -549,6 +593,52 @@ components:
             First port to try. Busy ports are skipped, so the lease may end up
             with higher ones; it fails if `count` ports are not found within
             the next 2000. 0 or omitted starts at 20000.
+    RunSpec:
+      type: object
+      description: Body of `POST /run`.
+      required: [name, dir, cmd]
+      properties:
+        name:
+          type: string
+          example: api-qa
+          description: 'Names the unit (`pm-<name>.service`) and what `pm stop` takes. Letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 characters.'
+        dir:
+          type: string
+          example: /home/me/work/api
+          description: Working directory. An absolute path to an existing directory.
+        cmd:
+          type: array
+          minItems: 1
+          items: {type: string}
+          example: [npm, run, dev]
+          description: The program and its arguments, as an argv (no shell).
+        env:
+          type: object
+          additionalProperties: {type: string}
+          description: 'Environment variables to add. Names are letters, digits and `_`; `PM_PROJECT` is reserved. Never stored by pm.'
+        limits: {$ref: "#/components/schemas/Limits"}
+        log:
+          type: string
+          description: Absolute path of the file stdout and stderr are appended to. Defaults to `~/.pm/logs/<name>.log`.
+        owner:
+          type: string
+          default: local
+          description: 'Who the run is for, same grammar as a lease owner. Omitted means `local`.'
+        ports:
+          type: array
+          maxItems: 100
+          items: {type: integer, minimum: 1, maximum: 65535}
+          description: Ports the process will use. See the operation description.
+    RunResult:
+      type: object
+      required: [unit, pid, ports]
+      properties:
+        unit: {type: string, example: pm-api-qa.service}
+        pid: {type: integer, description: "Main pid systemd reports; 0 if it could not be read."}
+        ports:
+          type: array
+          description: The ports the run holds, as requested. An empty array when none.
+          items: {type: integer}
     Lease:
       type: object
       required: [id, owner, ports, created_at]
@@ -655,11 +745,28 @@ components:
         group: {type: string}
         limits: {$ref: "#/components/schemas/Limits"}
         draft: {type: boolean}
+    RunInfo:
+      type: object
+      description: What a run started by `POST /run` keeps. The environment is not part of it.
+      properties:
+        ports:
+          type: array
+          items: {type: integer}
+        log: {type: string, description: Log file given at start; absent for the default.}
+        nonce: {type: string, description: Identifies this record among those of the same name over time.}
+        started: {type: string, format: date-time, description: When the record was written.}
+        launching: {type: boolean, description: True until systemd has started the unit; a run being launched holds its name.}
+        released: {type: boolean, description: True once the process died and pm let go of its ports.}
     Project:
       type: object
-      description: A project as stored in the registry (defaults applied).
+      description: |
+        A project as stored in the registry (defaults applied). Entries with a
+        `run` object are processes started by `POST /run`: they live only while
+        the process does and are not part of the catalog.
       required: [name, dir, cmd, kind, tier]
       properties:
+        owner: {type: string, description: Who the project belongs to; set on runs.}
+        run: {$ref: "#/components/schemas/RunInfo"}
         name: {type: string}
         dir: {type: string}
         cmd:
@@ -708,7 +815,8 @@ components:
             `failed` means systemd still holds the project's unit in the failed
             state, for instance because the kernel killed it for passing its
             memory limit; `failure` says why. Starting or stopping the project
-            clears it.
+            clears it. A run started by `POST /run` is `up` while its unit is
+            active, listening or not.
         failure:
           type: string
           example: oom-kill
@@ -719,6 +827,7 @@ components:
         pid: {type: integer}
         unit: {type: string}
         group: {type: string}
+        owner: {type: string, description: 'Who a process started by `POST /run` is for.'}
         cmd: {type: string}
         cwd: {type: string}
         docker: {type: boolean}

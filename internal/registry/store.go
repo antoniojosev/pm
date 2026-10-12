@@ -177,6 +177,9 @@ func (s *Store) FindByDir(dir string) (Project, bool) {
 		if p.Dir == "" {
 			continue
 		}
+		if p.IsRun() {
+			continue // a run is no project: it must not claim its directory
+		}
 		if dir == p.Dir || strings.HasPrefix(dir+string(os.PathSeparator), p.Dir+string(os.PathSeparator)) {
 			if !found || len(p.Dir) > len(best.Dir) {
 				best, found = p, true
@@ -191,9 +194,15 @@ func (s *Store) Upsert(p Project) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
+	if p.IsRun() {
+		return fmt.Errorf("%q: run entries are created by pm run only", p.Name)
+	}
 	return s.update(func() error {
 		for i, existing := range s.state.Projects {
 			if strings.EqualFold(existing.Name, p.Name) {
+				if existing.IsRun() {
+					return fmt.Errorf("%q is the name of a process started with pm run: stop it first", existing.Name)
+				}
 				s.state.Projects[i] = p
 				return nil
 			}
