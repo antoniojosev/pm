@@ -266,9 +266,9 @@ func (s *Service) Edit(p registry.Project) error { return s.Store.Upsert(p) }
 func (s *Service) Remove(name string) error {
 	_ = s.Store.Reload()
 	p, found := s.Store.Get(name)
-	_ = s.Run.Stop(name)
+	stopErr := s.Run.Stop(name)
 	if found && p.IsRun() {
-		return nil // stopping a run already forgot it
+		return stopErr // stopping a run already forgot it; if it failed, the record is still there
 	}
 	return s.Store.Remove(name)
 }

@@ -8,11 +8,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/registry"
 )
+
+// LaunchGrace is how long a record that is still launching counts as alive
+// even though its unit is not active yet. systemd-run takes well under a second;
+// the margin only matters when a launch dies without cleaning up, so that its
+// record does not hold the name forever.
+const LaunchGrace = 30 * time.Second
 
 // MaxRunPorts bounds how many ports one run can declare.
 const MaxRunPorts = 100
@@ -134,7 +141,13 @@ func (s RunSpec) project() registry.Project {
 		Tier:   registry.TierEphemeral,
 		Limits: s.Limits,
 		Owner:  s.Owner,
-		Run:    &registry.RunInfo{Ports: append([]int{}, s.Ports...), Log: s.Log},
+		Run: &registry.RunInfo{
+			Ports:     append([]int{}, s.Ports...),
+			Log:       s.Log,
+			Nonce:     registry.NewRunNonce(),
+			Started:   time.Now().UTC(),
+			Launching: true,
+		},
 	}
 }
 
@@ -156,10 +169,11 @@ func (r *Runner) LaunchSpec(spec RunSpec) (RunResult, error) {
 			return RunResult{}, fmt.Errorf("cannot create the log directory: %w", err)
 		}
 	}
+	// Ports of runs that died must not block this one.
+	r.ReleaseDeadRunPorts()
 	// A dead run of the same name (it exited, or failed) is replaced; a live
-	// one is not.
-	err = r.Store.AddRun(p, func(existing registry.Project) bool { return !r.IsActive(existing.Name) })
-	if err != nil {
+	// one, or one that is still being launched, is not.
+	if err := r.Store.AddRun(p, r.RunDead); err != nil {
 		return RunResult{}, err
 	}
 
@@ -169,11 +183,52 @@ func (r *Runner) LaunchSpec(spec RunSpec) (RunResult, error) {
 	}
 	sort.Strings(env)
 	if err := r.runTransient(p, spec.Cmd, env); err != nil {
-		_ = r.Store.Remove(p.Name)
+		// Only our own record: a concurrent launch of the same name cannot
+		// have one (AddRun refused it), but a later one may have written its own.
+		_ = r.Store.RemoveRun(p.Name, p.Run.Nonce)
 		return RunResult{}, err
 	}
+	_ = r.Store.FinishLaunch(p.Name, p.Run.Nonce)
 	res := RunResult{Unit: UnitName(p.Name), PID: r.mainPID(UnitName(p.Name)), Ports: p.Run.Ports}
 	return res, nil
+}
+
+// launching reports whether the record is a run whose launch is in flight.
+func launching(p registry.Project) bool {
+	return p.IsRun() && p.Run.Launching && time.Since(p.Run.Started) < LaunchGrace
+}
+
+// RunDead reports whether a run record may be replaced by a new run of the same
+// name: its unit is not active and its launch is not still in flight.
+func (r *Runner) RunDead(p registry.Project) bool {
+	return !launching(p) && !r.IsActive(p.Name)
+}
+
+// ReleaseDeadRunPorts lets go of the ports of runs whose process is gone, so
+// they stop blocking leases and launches until someone runs `pm stop`. The
+// record stays (pm ps still shows how the run ended). systemd is asked once,
+// outside the store's lock; when it cannot answer nothing is released.
+func (r *Runner) ReleaseDeadRunPorts() {
+	_ = r.Store.Reload()
+	var held []registry.Project
+	for _, p := range r.Store.List() {
+		if p.IsRun() && !p.Run.Released && len(p.Run.Ports) > 0 && !launching(p) {
+			held = append(held, p)
+		}
+	}
+	if len(held) == 0 {
+		return
+	}
+	units := r.UnitStates()
+	if units == nil {
+		return
+	}
+	for _, p := range held {
+		if st, ok := units[UnitName(p.Name)]; ok && (st.Active == "active" || st.Active == "activating" || st.Active == "reloading") {
+			continue
+		}
+		_ = r.Store.ReleaseRunPorts(p.Name, p.Run.Nonce)
+	}
 }
 
 // mainPID asks systemd for the pid of a unit's main process, 0 when unknown.

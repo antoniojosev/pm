@@ -199,3 +199,65 @@ func TestProjectValidatesItsOwner(t *testing.T) {
 		t.Fatalf("no owner is fine: %v", err)
 	}
 }
+
+func nonced(p Project, nonce string) Project {
+	p.Run.Nonce = nonce
+	p.Run.Launching = true
+	return p
+}
+
+// A record is changed or removed only by the launch that wrote it.
+func TestRunRecordsAreChangedOnlyByTheirOwnNonce(t *testing.T) {
+	s, _ := Open(tempPaths(t))
+	if err := s.AddRun(nonced(runEntry("x", "a", 4100), "mine"), alive); err != nil {
+		t.Fatal(err)
+	}
+
+	// another launch's rollback, release or finish does not touch it
+	_ = s.RemoveRun("x", "theirs")
+	_ = s.ReleaseRunPorts("x", "theirs")
+	_ = s.FinishLaunch("x", "theirs")
+	p, ok := s.Get("x")
+	if !ok || !p.Run.Launching || p.Run.Released {
+		t.Fatalf("a foreign nonce changed the record: %+v, %v", p, ok)
+	}
+
+	if err := s.FinishLaunch("x", "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.Get("x"); p.Run.Launching {
+		t.Fatal("FinishLaunch did not clear Launching")
+	}
+	if err := s.RemoveRun("x", "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("x"); ok {
+		t.Fatal("RemoveRun left the record")
+	}
+	if err := s.RemoveRun("x", "mine"); err != nil {
+		t.Fatalf("removing what is not there is not an error: %v", err)
+	}
+}
+
+func TestReleasedRunPortsAreNoLongerReserved(t *testing.T) {
+	s, _ := Open(tempPaths(t))
+	if err := s.AddRun(nonced(runEntry("x", "a", 4100), "n1"), alive); err != nil {
+		t.Fatal(err)
+	}
+	if !s.LeasedPorts()[4100] {
+		t.Fatal("a live run's port is not reserved")
+	}
+	if err := s.ReleaseRunPorts("x", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if s.LeasedPorts()[4100] {
+		t.Fatal("a released port is still reserved")
+	}
+	// another run may take it, and the dead record still lists its ports
+	if err := s.AddRun(runEntry("y", "b", 4100), alive); err != nil {
+		t.Fatalf("a released port blocked another run: %v", err)
+	}
+	if p, _ := s.Get("x"); !slices.Equal(p.Run.Ports, []int{4100}) || !p.Run.Released {
+		t.Fatalf("record = %+v", p.Run)
+	}
+}

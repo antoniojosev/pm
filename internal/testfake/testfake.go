@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Systemd is the installed pair of fakes.
@@ -31,7 +32,14 @@ for a in "$@"; do
 done
 { echo "systemd-run"; for a in "$@"; do echo "$a"; done; echo "--end--"; } >> "$state/calls"
 if [ -e "$state/fail-systemd-run" ]; then echo "fake systemd-run: refused" >&2; exit 1; fi
-echo __PID__ > "$state/$unit.pid"
+if [ -e "$state/delay-systemd-run" ]; then sleep "$(cat "$state/delay-systemd-run")"; fi
+# Like systemd: a unit that is already loaded cannot be started again. The
+# check and the creation are one step (noclobber), so two racing starts of one
+# unit cannot both succeed.
+if ! ( set -C; echo __PID__ > "$state/$unit.pid" ) 2>/dev/null; then
+  echo "Failed to start transient service unit: Unit $unit was already loaded or has a fragment file." >&2
+  exit 1
+fi
 echo "Running as unit: $unit."
 `
 
@@ -59,10 +67,25 @@ case "$verb" in
   is-active)
     if [ -e "$state/$1.pid" ]; then echo active; else echo inactive; exit 3; fi ;;
   stop)
+    if [ -e "$state/fail-stop" ]; then echo "fake systemctl: refused to stop" >&2; exit 1; fi
     rm -f "$state/$1.pid" ;;
 esac
 exit 0
 `
+
+// tools are the programs the fake scripts use, resolved when the package is
+// initialised: before any test replaces PATH. Helpers that call Install have
+// already pointed PATH at an empty directory by then, so looking them up there
+// would find nothing.
+var tools = func() map[string]string {
+	out := map[string]string{}
+	for _, tool := range []string{"cat", "basename", "rm", "sleep"} {
+		if real, err := exec.LookPath(tool); err == nil {
+			out[tool] = real
+		}
+	}
+	return out
+}()
 
 // Install makes the fake systemctl and systemd-run the only programs on PATH.
 func Install(t *testing.T) *Systemd {
@@ -82,12 +105,13 @@ func Install(t *testing.T) *Systemd {
 			t.Fatal(err)
 		}
 	}
-	// The scripts use cat, basename and rm. They are linked in, so that PATH is
-	// this directory alone: no real systemctl, ss or docker can answer.
-	for _, tool := range []string{"cat", "basename", "rm"} {
-		real, err := exec.LookPath(tool)
-		if err != nil {
-			t.Skipf("testfake needs %s: %v", tool, err)
+	// The scripts use cat, basename, rm and sleep. They are linked in, so that
+	// PATH is this directory alone: no real systemctl, ss or docker can answer.
+	// A missing tool fails the test: skipping would let a broken fake pass.
+	for _, tool := range []string{"cat", "basename", "rm", "sleep"} {
+		real, ok := tools[tool]
+		if !ok {
+			t.Fatalf("testfake needs %s, and it was not on PATH when the test binary started", tool)
 		}
 		if err := os.Symlink(real, filepath.Join(bin, tool)); err != nil {
 			t.Fatal(err)
@@ -131,10 +155,28 @@ func (s *Systemd) Active(unit string) bool {
 // Kill makes the unit vanish as if its process had exited.
 func (s *Systemd) Kill(unit string) { _ = os.Remove(filepath.Join(s.state, unit+".pid")) }
 
+// DelaySystemdRun makes every later systemd-run take d to start its unit, which
+// opens the window in which two starts of one name can overlap.
+func (s *Systemd) DelaySystemdRun(t *testing.T, d time.Duration) {
+	t.Helper()
+	secs := strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
+	if err := os.WriteFile(filepath.Join(s.state, "delay-systemd-run"), []byte(secs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // FailSystemdRun makes every later systemd-run exit with an error.
 func (s *Systemd) FailSystemdRun(t *testing.T) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(s.state, "fail-systemd-run"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FailStop makes every later `systemctl stop` exit with an error.
+func (s *Systemd) FailStop(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.state, "fail-stop"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

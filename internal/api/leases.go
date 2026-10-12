@@ -57,6 +57,7 @@ func (s *Service) CreateLease(req LeaseRequest) (registry.Lease, error) {
 	// The slow probe (ss, docker) runs before the store lock. A listener that
 	// appears after it is caught by the bind test inside the lock.
 	live := s.Run.LivePorts()
+	s.Run.ReleaseDeadRunPorts() // ports of runs that died are free again
 	lease, err := s.Store.AddLease(req.Owner, func(leased map[int]bool) ([]int, error) {
 		var got []int
 		for p := start; p < start+leaseScanWindow && p <= 65535 && len(got) < count; p++ {

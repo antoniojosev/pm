@@ -36,7 +36,7 @@ systemctl --user enable --now pm-daemon pm-caddy
 
 ```
 pm run -- <cmd>        launches the cwd (auto-registers, detects port, marks it)
-pm run --name <n> -- <cmd>     starts a command by name without registering it: --owner, --ports, -e K=V, --log, --mem/--cpu; shows in pm ps with its owner, pm stop forgets it
+pm run --name <n> -- <cmd>     starts a command by name without registering it: --owner, --ports, -e K=V, --log, --mem/--cpu; shows in pm ps with its owner, pm stop forgets it; a run's ports are reserved while its process lives and released when it dies
 pm ps                  list running projects (add -a to include stopped)
 pm start|stop|restart <name>   start accepts --mem 512M --cpu 150%
 pm promote|demote <name>       ephemeral ↔ permanent service

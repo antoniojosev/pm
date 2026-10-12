@@ -109,7 +109,7 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	}
 	res := Result{Project: p.Name, Unit: UnitName(p.Name)}
 
-	_ = r.Store.Reload() // leases may have been taken by another process
+	r.ReleaseDeadRunPorts() // reloads the store: leases may have been taken by another process
 	port, note, err := resolvePort(p, opts, r.occupiedPorts(), r.Store.LeasedPorts())
 	if err != nil {
 		return Result{}, err

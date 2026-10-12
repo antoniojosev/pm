@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/antoniojosev/pm/internal/detector"
 	"github.com/antoniojosev/pm/internal/registry"
@@ -323,5 +325,155 @@ func TestSimultaneousRunsNeverShareAPort(t *testing.T) {
 	}
 	if won != 1 {
 		t.Fatalf("%d runs got port 4100, want exactly 1", won)
+	}
+}
+
+// Two starts of one name, truly simultaneous and with systemd-run slow enough
+// for them to overlap (the unit of the winner is not active yet while it runs):
+// one wins, the other is refused, and the winner keeps its record, its owner and
+// its ports. The fake systemd-run refuses a unit that is already loaded, as
+// systemd does, so a loser that got as far as systemd-run would fail there and
+// take the winner's record away with its rollback.
+func TestSimultaneousRunsOfOneNameLeaveTheWinnerRegistered(t *testing.T) {
+	svc, sd := runService(t)
+	sd.DelaySystemdRun(t, 300*time.Millisecond)
+	const racers = 6
+	results := make(chan error, racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		spec := runSpec(t, "x", 4100+i)
+		spec.Owner = "wt-" + strconv.Itoa(i)
+		go func() {
+			<-start
+			_, err := svc.StartRun(spec)
+			results <- err
+		}()
+	}
+	close(start)
+	won := 0
+	for i := 0; i < racers; i++ {
+		err := <-results
+		if err == nil {
+			won++
+		} else if !strings.Contains(err.Error(), "already running") {
+			t.Errorf("a loser failed for the wrong reason: %v", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d runs of the same name were accepted, want exactly 1", won)
+	}
+	if !sd.Active("pm-x.service") {
+		t.Fatal("the winner's unit is not running")
+	}
+	_ = svc.Store.Reload()
+	p, ok := svc.Store.Get("x")
+	if !ok || !p.IsRun() || p.Run.Launching || len(p.Run.Ports) != 1 {
+		t.Fatalf("record of the winner = %+v, %v", p, ok)
+	}
+	if r := rowByName(t, svc, "x"); r.Status != "up" || r.Owner != p.Owner {
+		t.Fatalf("row = %+v, owner of the record %q", r, p.Owner)
+	}
+	if !svc.Store.LeasedPorts()[p.Run.Ports[0]] {
+		t.Fatalf("the winner's port %d is not reserved", p.Run.Ports[0])
+	}
+}
+
+// A launch that systemd refuses takes back its own record, and nothing else.
+func TestFailedRunLaunchTakesBackItsRecord(t *testing.T) {
+	svc, sd := runService(t)
+	sd.FailSystemdRun(t)
+	if _, err := svc.StartRun(runSpec(t, "x", 4100)); err == nil {
+		t.Fatal("StartRun succeeded with systemd-run failing")
+	}
+	_ = svc.Store.Reload()
+	if len(svc.Store.List()) != 0 || svc.Store.LeasedPorts()[4100] {
+		t.Fatalf("a failed launch left %+v behind", svc.Store.List())
+	}
+}
+
+// A record still being launched is alive even though its unit is not active
+// yet, until the launch grace is over (a launch that died without cleaning up).
+func TestRunStillBeingLaunchedHoldsItsName(t *testing.T) {
+	svc, _ := runService(t)
+	rec := registry.Project{
+		Name: "x", Dir: t.TempDir(), Cmd: []string{"sleep", "1"}, Kind: registry.KindNative,
+		Tier: registry.TierEphemeral, Owner: "wt-a",
+		Run: &registry.RunInfo{Nonce: "n1", Started: time.Now().UTC(), Launching: true},
+	}
+	if err := svc.Store.AddRun(rec, func(registry.Project) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.StartRun(runSpec(t, "x")); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("a run being launched lost its name: %v", err)
+	}
+	// the launch that wrote it died long ago
+	rec.Run.Started = time.Now().Add(-2 * runner.LaunchGrace).UTC()
+	if err := svc.Store.AddRun(rec, func(registry.Project) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.StartRun(runSpec(t, "x")); err != nil {
+		t.Fatalf("a stale launching record kept the name for ever: %v", err)
+	}
+}
+
+// The ports of a run whose process died are free again, without anyone running
+// pm stop. The record stays, so pm ps still shows the run as down.
+func TestPortsOfADeadRunAreReleased(t *testing.T) {
+	svc, sd := runService(t)
+	if _, err := svc.StartRun(runSpec(t, "x", 4100, 4101)); err != nil {
+		t.Fatal(err)
+	}
+	// alive: its ports stay reserved
+	if l, err := svc.CreateLease(LeaseRequest{Owner: "a", Count: 1, Prefer: 4100}); err != nil || slices.Contains(l.Ports, 4100) {
+		t.Fatalf("lease over a live run: %v, %v", l, err)
+	}
+	sd.Kill("pm-x.service")
+
+	l, err := svc.CreateLease(LeaseRequest{Owner: "b", Count: 2, Prefer: 4100})
+	if err != nil || !slices.Equal(l.Ports, []int{4100, 4101}) {
+		t.Fatalf("lease after the run died: %v, %v", l, err)
+	}
+	if r := rowByName(t, svc, "x"); r.Status != "down" || r.Owner == "" {
+		t.Fatalf("the dead run should still be listed as down: %+v", r)
+	}
+	// another run may take them too, and stopping the dead one stays harmless
+	other := runSpec(t, "y", 4110)
+	if _, err := svc.StartRun(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Stop("x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := svc.Store.Get("x"); ok {
+		t.Fatal("stop did not forget the dead run")
+	}
+}
+
+func TestPortsOfADeadRunAreReleasedForPmsOwnLaunches(t *testing.T) {
+	svc, sd := runService(t)
+	if _, err := svc.StartRun(runSpec(t, "x", 4100)); err != nil {
+		t.Fatal(err)
+	}
+	sd.Kill("pm-x.service")
+	if _, err := svc.StartRun(runSpec(t, "y", 4100)); err != nil {
+		t.Fatalf("a run could not take the port of one that died: %v", err)
+	}
+}
+
+// Remove of a run reports the failure of the stop: the run is still there.
+func TestRemoveOfARunReportsAFailedStop(t *testing.T) {
+	svc, sd := runService(t)
+	if _, err := svc.StartRun(runSpec(t, "x")); err != nil {
+		t.Fatal(err)
+	}
+	sd.FailStop(t)
+	if err := svc.Remove("x"); err == nil {
+		t.Fatal("Remove returned nil although the stop failed")
+	}
+	if !sd.Active("pm-x.service") {
+		t.Fatal("the unit should still be running")
+	}
+	if _, ok := svc.Store.Get("x"); !ok {
+		t.Fatal("the record of a run that is still alive was dropped")
 	}
 }

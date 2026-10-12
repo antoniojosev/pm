@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Tier describes how a project is expected to run.
@@ -151,6 +152,20 @@ type RunInfo struct {
 	// Log is the file the process writes to, when it is not the default
 	// ~/.pm/logs/<name>.log.
 	Log string `json:"log,omitempty"`
+	// Nonce identifies this record among those of the same name over time. A
+	// launch that fails takes back its own record only (RemoveRun), never one a
+	// later run of the same name has written since.
+	Nonce string `json:"nonce,omitempty"`
+	// Started is when the record was written.
+	Started time.Time `json:"started,omitempty"`
+	// Launching is true from the moment the record is written until systemd has
+	// started the unit. In that window the unit is not active yet, but the run
+	// is not dead either: its name cannot be taken.
+	Launching bool `json:"launching,omitempty"`
+	// Released is true once pm saw the process gone and let go of its Ports:
+	// they no longer count as reserved. The record stays, so `pm ps` still
+	// shows how the run ended until it is stopped.
+	Released bool `json:"released,omitempty"`
 }
 
 // IsRun reports whether the entry was created by a run-by-specification

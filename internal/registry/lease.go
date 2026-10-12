@@ -65,7 +65,7 @@ func (s *Store) LeasedPorts() map[int]bool {
 func (s *Store) reserved() map[int]bool {
 	out := leasedPorts(s.state.Leases)
 	for _, p := range s.state.Projects {
-		if p.Run == nil {
+		if p.Run == nil || p.Run.Released {
 			continue
 		}
 		for _, port := range p.Run.Ports {

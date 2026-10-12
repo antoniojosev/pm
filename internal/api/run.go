@@ -25,7 +25,7 @@ func (s *Service) StartRun(spec runner.RunSpec) (runner.RunResult, error) {
 	// its running owner holds. The registry re-checks it atomically.
 	_ = s.Store.Reload()
 	if existing, ok := s.Store.Get(spec.Name); ok {
-		if err := registry.NameTaken(existing, existing.IsRun() && !s.Run.IsActive(existing.Name)); err != nil {
+		if err := registry.NameTaken(existing, existing.IsRun() && s.Run.RunDead(existing)); err != nil {
 			return runner.RunResult{}, err
 		}
 	}
