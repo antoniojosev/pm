@@ -7,39 +7,96 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/antoniojosev/pm/internal/registry"
 	"github.com/antoniojosev/pm/internal/runner"
 )
 
-func (d *Daemon) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/ps", d.hPS)
-	mux.HandleFunc("GET /api/projects", d.hProjects)
-	mux.HandleFunc("POST /api/projects", d.hUpsertProject)
-	mux.HandleFunc("DELETE /api/projects/{name}", d.hDeleteProject)
-	mux.HandleFunc("POST /api/projects/{name}/start", d.hStart)
-	mux.HandleFunc("POST /api/projects/{name}/stop", d.hStop)
-	mux.HandleFunc("POST /api/projects/{name}/restart", d.hRestart)
-	mux.HandleFunc("POST /api/projects/{name}/promote", d.hPromote)
-	mux.HandleFunc("POST /api/projects/{name}/demote", d.hDemote)
-	mux.HandleFunc("GET /api/projects/{name}/logs", d.hLogs)
-	mux.HandleFunc("POST /api/claim", d.hClaim)
-	mux.HandleFunc("POST /api/scan", d.hScan)
-	mux.HandleFunc("GET /api/groups", d.hGroups)
-	mux.HandleFunc("POST /api/groups", d.hUpsertGroup)
-	mux.HandleFunc("DELETE /api/groups/{name}", d.hDeleteGroup)
-	mux.HandleFunc("POST /api/groups/{name}/up", d.hGroupUp)
-	mux.HandleFunc("POST /api/groups/{name}/down", d.hGroupDown)
-	mux.HandleFunc("GET /api/events", d.hEvents)
-	mux.HandleFunc("GET /api/logs/stream", d.hLogStream)
-	mux.HandleFunc("POST /api/instances/{port}/stop", d.hInstanceStop)
-	mux.HandleFunc("POST /api/instances/{port}/restart", d.hInstanceRestart)
-	mux.HandleFunc("GET /api/fs", d.hBrowse)
-	mux.HandleFunc("GET /api/detect", d.hDetect)
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]string{"status": "ok"})
-	})
+// APIPrefix is the versioned base path of the HTTP API.
+const APIPrefix = "/api/v1"
+
+// legacyPrefix is the unversioned alias kept during v0.2. Every route under it
+// answers like its /api/v1 twin plus a Deprecation header.
+const legacyPrefix = "/api"
+
+// Route is one entry of the API table. Path is relative to the API prefix
+// (e.g. "/projects/{name}/start"). docs/api/openapi.yaml must describe every
+// entry here and nothing else; TestRoutesMatchOpenAPI enforces both ways.
+type Route struct {
+	Method  string
+	Path    string
+	Handler http.HandlerFunc
+}
+
+// apiRoutes is the single source of truth for the HTTP API.
+func (d *Daemon) apiRoutes() []Route {
+	return []Route{
+		{"GET", "/ps", d.hPS},
+		{"GET", "/projects", d.hProjects},
+		{"POST", "/projects", d.hUpsertProject},
+		{"DELETE", "/projects/{name}", d.hDeleteProject},
+		{"POST", "/projects/{name}/start", d.hStart},
+		{"POST", "/projects/{name}/stop", d.hStop},
+		{"POST", "/projects/{name}/restart", d.hRestart},
+		{"POST", "/projects/{name}/promote", d.hPromote},
+		{"POST", "/projects/{name}/demote", d.hDemote},
+		{"GET", "/projects/{name}/logs", d.hLogs},
+		{"POST", "/claim", d.hClaim},
+		{"POST", "/scan", d.hScan},
+		{"GET", "/groups", d.hGroups},
+		{"POST", "/groups", d.hUpsertGroup},
+		{"DELETE", "/groups/{name}", d.hDeleteGroup},
+		{"POST", "/groups/{name}/up", d.hGroupUp},
+		{"POST", "/groups/{name}/down", d.hGroupDown},
+		{"GET", "/events", d.hEvents},
+		{"GET", "/logs/stream", d.hLogStream},
+		{"POST", "/instances/{port}/stop", d.hInstanceStop},
+		{"POST", "/instances/{port}/restart", d.hInstanceRestart},
+		{"GET", "/fs", d.hBrowse},
+		{"GET", "/detect", d.hDetect},
+		{"GET", "/health", d.hHealth},
+	}
+}
+
+// router is the part of *http.ServeMux that routes() needs. Taking an
+// interface lets a test record every pattern that gets registered.
+type router interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+// routes mounts every API route under /api/v1 and, as a deprecated alias,
+// under /api. It is the only place that registers API patterns.
+func (d *Daemon) routes(mux router) {
+	for _, rt := range d.apiRoutes() {
+		mux.HandleFunc(rt.Method+" "+APIPrefix+rt.Path, rt.Handler)
+		mux.HandleFunc(rt.Method+" "+legacyPrefix+rt.Path, deprecated(rt.Handler))
+	}
+}
+
+// deprecationDate is the Deprecation header value: an RFC 9745 Structured Field
+// Date (`@<unix seconds>`), here 2026-10-12 00:00:00 UTC, the day ADR 0001
+// deprecated the unversioned /api alias.
+const deprecationDate = "@1791763200"
+
+// deprecated marks a response from the unversioned alias with the Deprecation
+// header (RFC 9745) plus a successor-version link to the same request under
+// /api/v1.
+func deprecated(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		successor := APIPrefix + strings.TrimPrefix(r.URL.EscapedPath(), legacyPrefix)
+		if r.URL.RawQuery != "" {
+			successor += "?" + r.URL.RawQuery
+		}
+		w.Header().Set("Deprecation", deprecationDate)
+		w.Header().Add("Link", "<"+successor+">; rel=\"successor-version\"")
+		h(w, r)
+	}
+}
+
+func (d *Daemon) hHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 func (d *Daemon) hInstanceStop(w http.ResponseWriter, r *http.Request) {

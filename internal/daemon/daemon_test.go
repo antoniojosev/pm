@@ -79,7 +79,7 @@ func do(t *testing.T, srv *httptest.Server, method, path, body string) (int, map
 
 func TestHealth(t *testing.T) {
 	_, srv := newTestDaemon(t)
-	code, obj, _ := do(t, srv, "GET", "/api/health", "")
+	code, obj, _ := do(t, srv, "GET", "/api/v1/health", "")
 	if code != 200 || obj["status"] != "ok" {
 		t.Fatalf("health = %d %v", code, obj)
 	}
@@ -88,15 +88,15 @@ func TestHealth(t *testing.T) {
 func TestProjectsCRUD(t *testing.T) {
 	d, srv := newTestDaemon(t)
 
-	code, obj, _ := do(t, srv, "POST", "/api/projects", `{"dir":"/srv/x"}`)
+	code, obj, _ := do(t, srv, "POST", "/api/v1/projects", `{"dir":"/srv/x"}`)
 	if code != 400 || !strings.Contains(obj["error"].(string), "name is required") {
 		t.Fatalf("nameless project: %d %v", code, obj)
 	}
-	code, obj, _ = do(t, srv, "POST", "/api/projects", `{bad json`)
+	code, obj, _ = do(t, srv, "POST", "/api/v1/projects", `{bad json`)
 	if code != 400 || obj["error"] == nil {
 		t.Fatalf("bad json: %d %v", code, obj)
 	}
-	code, _, _ = do(t, srv, "POST", "/api/projects", `{"name":"web","dir":"/srv/web","prefer_port":5173}`)
+	code, _, _ = do(t, srv, "POST", "/api/v1/projects", `{"name":"web","dir":"/srv/web","prefer_port":5173}`)
 	if code != 200 {
 		t.Fatalf("create: %d", code)
 	}
@@ -104,23 +104,23 @@ func TestProjectsCRUD(t *testing.T) {
 		t.Fatalf("stored = %+v, %v", p, ok)
 	}
 
-	code, _, raw := do(t, srv, "GET", "/api/projects", "")
+	code, _, raw := do(t, srv, "GET", "/api/v1/projects", "")
 	var list []registry.Project
 	if err := json.Unmarshal([]byte(raw), &list); err != nil || code != 200 || len(list) != 1 || list[0].Name != "web" {
 		t.Fatalf("list: %d %s (%v)", code, raw, err)
 	}
 
-	code, _, raw = do(t, srv, "GET", "/api/ps", "")
+	code, _, raw = do(t, srv, "GET", "/api/v1/ps", "")
 	var rows []api.Row
 	if err := json.Unmarshal([]byte(raw), &rows); err != nil || code != 200 || len(rows) != 1 || rows[0].Status != "down" {
 		t.Fatalf("ps: %d %s (%v)", code, raw, err)
 	}
 
-	code, obj, _ = do(t, srv, "DELETE", "/api/projects/web", "")
+	code, obj, _ = do(t, srv, "DELETE", "/api/v1/projects/web", "")
 	if code != 200 || obj["ok"] != true {
 		t.Fatalf("delete: %d %v", code, obj)
 	}
-	code, _, _ = do(t, srv, "DELETE", "/api/projects/web", "")
+	code, _, _ = do(t, srv, "DELETE", "/api/v1/projects/web", "")
 	if code != 400 {
 		t.Fatalf("delete twice: %d", code)
 	}
@@ -128,27 +128,27 @@ func TestProjectsCRUD(t *testing.T) {
 
 func TestLifecycleErrorsAreReported(t *testing.T) {
 	_, srv := newTestDaemon(t)
-	_, _, _ = do(t, srv, "POST", "/api/projects", `{"name":"remote"}`)
+	_, _, _ = do(t, srv, "POST", "/api/v1/projects", `{"name":"remote"}`)
 
 	tests := []struct {
 		method, path, want string
 	}{
-		{"POST", "/api/projects/remote/start?port=3000", "no local directory"},
-		{"POST", "/api/projects/ghost/start", "not registered"},
-		{"POST", "/api/projects/ghost/restart", "not registered"},
-		{"POST", "/api/projects/ghost/promote", "not registered"},
-		{"POST", "/api/projects/ghost/demote", "not registered"},
-		{"POST", "/api/projects/remote/stop", "not running under pm"},
-		{"POST", "/api/instances/1/stop", "nothing listening"},
-		{"POST", "/api/instances/1/restart", "nothing listening"},
-		{"POST", "/api/groups/nope/up", "does not exist"},
-		{"POST", "/api/groups/nope/down", "does not exist"},
-		{"POST", "/api/claim", "no listener on port 0"},
+		{"POST", "/api/v1/projects/remote/start?port=3000", "no local directory"},
+		{"POST", "/api/v1/projects/ghost/start", "not registered"},
+		{"POST", "/api/v1/projects/ghost/restart", "not registered"},
+		{"POST", "/api/v1/projects/ghost/promote", "not registered"},
+		{"POST", "/api/v1/projects/ghost/demote", "not registered"},
+		{"POST", "/api/v1/projects/remote/stop", "not running under pm"},
+		{"POST", "/api/v1/instances/1/stop", "nothing listening"},
+		{"POST", "/api/v1/instances/1/restart", "nothing listening"},
+		{"POST", "/api/v1/groups/nope/up", "does not exist"},
+		{"POST", "/api/v1/groups/nope/down", "does not exist"},
+		{"POST", "/api/v1/claim", "no listener on port 0"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			body := ""
-			if tc.path == "/api/claim" {
+			if tc.path == "/api/v1/claim" {
 				body = `{"port":0,"name":"x"}`
 			}
 			code, obj, _ := do(t, srv, tc.method, tc.path, body)
@@ -162,33 +162,33 @@ func TestLifecycleErrorsAreReported(t *testing.T) {
 
 func TestGroupsAPI(t *testing.T) {
 	_, srv := newTestDaemon(t)
-	code, _, _ := do(t, srv, "POST", "/api/groups", `{"name":"stack","projects":["web","api"]}`)
+	code, _, _ := do(t, srv, "POST", "/api/v1/groups", `{"name":"stack","projects":["web","api"]}`)
 	if code != 200 {
 		t.Fatalf("create group: %d", code)
 	}
-	code, _, _ = do(t, srv, "POST", "/api/groups", `nope`)
+	code, _, _ = do(t, srv, "POST", "/api/v1/groups", `nope`)
 	if code != 400 {
 		t.Fatalf("bad group json: %d", code)
 	}
-	code, _, raw := do(t, srv, "GET", "/api/groups", "")
+	code, _, raw := do(t, srv, "GET", "/api/v1/groups", "")
 	var groups []registry.Group
 	if err := json.Unmarshal([]byte(raw), &groups); err != nil || code != 200 || len(groups) != 1 || len(groups[0].Projects) != 2 {
 		t.Fatalf("groups: %d %s", code, raw)
 	}
 	// members are not registered → per-project error notes, HTTP 200
-	code, _, raw = do(t, srv, "POST", "/api/groups/stack/up", "")
+	code, _, raw = do(t, srv, "POST", "/api/v1/groups/stack/up", "")
 	if code != 200 || !strings.Contains(raw, "error: ") {
 		t.Fatalf("group up: %d %s", code, raw)
 	}
-	code, _, _ = do(t, srv, "POST", "/api/groups/stack/down", "")
+	code, _, _ = do(t, srv, "POST", "/api/v1/groups/stack/down", "")
 	if code != 200 {
 		t.Fatalf("group down: %d", code)
 	}
-	code, _, _ = do(t, srv, "DELETE", "/api/groups/stack", "")
+	code, _, _ = do(t, srv, "DELETE", "/api/v1/groups/stack", "")
 	if code != 200 {
 		t.Fatalf("delete group: %d", code)
 	}
-	code, _, _ = do(t, srv, "DELETE", "/api/groups/stack", "")
+	code, _, _ = do(t, srv, "DELETE", "/api/v1/groups/stack", "")
 	if code != 400 {
 		t.Fatalf("delete missing group: %d", code)
 	}
@@ -208,17 +208,17 @@ func TestClaimAndScan(t *testing.T) {
 		return []detector.Instance{{Port: 8080, PID: 7, Cwd: proj}}, nil
 	}
 
-	code, obj, _ := do(t, srv, "POST", "/api/claim", `{"port":8080,"name":"svc"}`)
+	code, obj, _ := do(t, srv, "POST", "/api/v1/claim", `{"port":8080,"name":"svc"}`)
 	if code != 200 || obj["name"] != "svc" || obj["stack"] != "go" {
 		t.Fatalf("claim: %d %v", code, obj)
 	}
-	code, _, _ = do(t, srv, "POST", "/api/claim", `garbage`)
+	code, _, _ = do(t, srv, "POST", "/api/v1/claim", `garbage`)
 	if code != 400 {
 		t.Fatalf("claim bad json: %d", code)
 	}
 
 	// svc already registered by the claim → scan adds nothing new
-	code, _, raw := do(t, srv, "POST", "/api/scan", "")
+	code, _, raw := do(t, srv, "POST", "/api/v1/scan", "")
 	if code != 200 || strings.TrimSpace(raw) != "null" {
 		t.Fatalf("scan: %d %s", code, raw)
 	}
@@ -229,11 +229,11 @@ func TestLogsEndpoint(t *testing.T) {
 	if err := os.WriteFile(d.svc.LogPath("web"), []byte("a\nb\nc\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, obj, _ := do(t, srv, "GET", "/api/projects/web/logs?n=2", "")
+	code, obj, _ := do(t, srv, "GET", "/api/v1/projects/web/logs?n=2", "")
 	if code != 200 || obj["logs"] != "c\n" {
 		t.Fatalf("logs: %d %v", code, obj)
 	}
-	code, obj, _ = do(t, srv, "GET", "/api/projects/none/logs", "")
+	code, obj, _ = do(t, srv, "GET", "/api/v1/projects/none/logs", "")
 	if code != 200 || obj["logs"] != "" {
 		t.Fatalf("missing logs: %d %v", code, obj)
 	}
@@ -249,7 +249,7 @@ func TestFSAndDetect(t *testing.T) {
 	}
 	_, srv := newTestDaemon(t, root)
 
-	code, obj, _ := do(t, srv, "GET", "/api/fs", "")
+	code, obj, _ := do(t, srv, "GET", "/api/v1/fs", "")
 	if code != 200 || obj["path"] != root {
 		t.Fatalf("fs: %d %v", code, obj)
 	}
@@ -257,16 +257,16 @@ func TestFSAndDetect(t *testing.T) {
 	if len(entries) != 1 || entries[0].(map[string]any)["stack"] != "django" {
 		t.Fatalf("entries = %v", entries)
 	}
-	code, _, _ = do(t, srv, "GET", "/api/fs?path="+filepath.Join(root, "missing"), "")
+	code, _, _ = do(t, srv, "GET", "/api/v1/fs?path="+filepath.Join(root, "missing"), "")
 	if code != 400 {
 		t.Fatalf("fs missing: %d", code)
 	}
 
-	code, obj, _ = do(t, srv, "GET", "/api/detect?path="+filepath.Join(root, "app"), "")
+	code, obj, _ = do(t, srv, "GET", "/api/v1/detect?path="+filepath.Join(root, "app"), "")
 	if code != 200 || obj["ok"] != true || obj["stack"] != "django" || obj["prefer_port"] != float64(8000) {
 		t.Fatalf("detect: %d %v", code, obj)
 	}
-	code, obj, _ = do(t, srv, "GET", "/api/detect?path="+root, "")
+	code, obj, _ = do(t, srv, "GET", "/api/v1/detect?path="+root, "")
 	if code != 200 || obj["ok"] != false {
 		t.Fatalf("detect nothing: %d %v", code, obj)
 	}
@@ -274,11 +274,11 @@ func TestFSAndDetect(t *testing.T) {
 
 func TestEventsStreamsPSOnce(t *testing.T) {
 	_, srv := newTestDaemon(t)
-	_, _, _ = do(t, srv, "POST", "/api/projects", `{"name":"web"}`)
+	_, _, _ = do(t, srv, "POST", "/api/v1/projects", `{"name":"web"}`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/events", nil)
 	res, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestLogStream(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/logs/stream?name=web", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/logs/stream?name=web", nil)
 	res, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +328,7 @@ func TestLogStream(t *testing.T) {
 	t.Run("missing log keeps the stream open", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/logs/stream?name=none", nil)
+		req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/logs/stream?name=none", nil)
 		res, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -412,7 +412,7 @@ func TestServeAndShutdown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- d.Serve(ctx) }()
 
-	url := "http://127.0.0.1:" + itoa(ln) + "/api/health"
+	url := "http://127.0.0.1:" + itoa(ln) + "/api/v1/health"
 	var res *http.Response
 	for i := 0; i < 50; i++ {
 		if res, err = http.Get(url); err == nil {

@@ -28,9 +28,17 @@ func New(svc *api.Service, port int) *Daemon {
 	return &Daemon{svc: svc, port: port}
 }
 
-// Serve blocks serving until ctx is cancelled.
-func (d *Daemon) Serve(ctx context.Context) error {
-	mux := http.NewServeMux()
+// mounter is the part of *http.ServeMux that mount() needs; a test swaps in a
+// recorder to see every pattern the daemon registers.
+type mounter interface {
+	router
+	Handle(pattern string, handler http.Handler)
+}
+
+// mount registers everything the daemon serves: the HTTP API, the embedded
+// dashboard and the MCP endpoint. Serve calls it; nothing else registers
+// patterns, so a recorder passed here sees the complete surface.
+func (d *Daemon) mount(mux mounter) {
 	d.routes(mux)
 
 	// static SPA (fallback for any non-/api path)
@@ -41,6 +49,12 @@ func (d *Daemon) Serve(ctx context.Context) error {
 	// MCP endpoint (streamable HTTP)
 	mux.Handle("/mcp", mcp.Handler(d.svc))
 	mux.Handle("/mcp/", mcp.Handler(d.svc))
+}
+
+// Serve blocks serving until ctx is cancelled.
+func (d *Daemon) Serve(ctx context.Context) error {
+	mux := http.NewServeMux()
+	d.mount(mux)
 
 	srv := &http.Server{
 		Addr:    "127.0.0.1:" + itoa(d.port),

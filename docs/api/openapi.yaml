@@ -1,0 +1,574 @@
+openapi: 3.0.3
+info:
+  title: pm HTTP API
+  version: "1"
+  description: |
+    Local HTTP API of the pm daemon (default http://127.0.0.1:9797). It listens
+    on loopback only and has no authentication.
+
+    Every route lives under `/api/v1`. The unversioned `/api/...` paths are a
+    deprecated alias kept during v0.2: they answer identically and add
+    `Deprecation: @1791763200` (RFC 9745: a Structured Field Date, here
+    2026-10-12) and `Link: <...>; rel="successor-version"` headers.
+
+    Errors are `{"error": "<message>"}` with HTTP 400 (the daemon does not
+    distinguish error classes yet).
+
+    This file is the contract. `TestRoutesMatchOpenAPI` (internal/daemon) fails
+    when a route is added or removed in code without updating it, and the
+    other way round.
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:9797/api/v1
+tags:
+  - name: system
+  - name: projects
+  - name: processes
+  - name: groups
+  - name: discovery
+  - name: streams
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: health
+      summary: Liveness probe
+      responses:
+        "200":
+          description: Daemon is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, example: ok}
+  /ps:
+    get:
+      tags: [processes]
+      operationId: ps
+      summary: Everything listening, attributed to projects where possible
+      description: Registered projects (up or down) plus unclaimed listeners.
+      responses:
+        "200":
+          description: One row per project or listener.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Row"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects:
+    get:
+      tags: [projects]
+      operationId: listProjects
+      summary: List registered projects
+      responses:
+        "200":
+          description: The registry catalog.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Project"}
+    post:
+      tags: [projects]
+      operationId: upsertProject
+      summary: Register or update a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProjectInput"}
+      responses:
+        "200":
+          description: |
+            The request body echoed back exactly as sent, without the defaults
+            the daemon applies when storing (`kind` defaults to `native` and
+            `tier` to `ephemeral`; omitted fields come back empty or `null`).
+            Read the stored project with `GET /projects`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProjectEcho"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    delete:
+      tags: [projects]
+      operationId: deleteProject
+      summary: Remove a project from the registry
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/start:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+      - {$ref: "#/components/parameters/Port"}
+      - {$ref: "#/components/parameters/Force"}
+    post:
+      tags: [processes]
+      operationId: startProject
+      summary: Start a registered project
+      responses:
+        "200": {$ref: "#/components/responses/Launch"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/stop:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    post:
+      tags: [processes]
+      operationId: stopProject
+      summary: Stop a project started by pm
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/restart:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+      - {$ref: "#/components/parameters/Port"}
+      - {$ref: "#/components/parameters/Force"}
+    post:
+      tags: [processes]
+      operationId: restartProject
+      summary: Stop then start a project
+      responses:
+        "200": {$ref: "#/components/responses/Launch"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/promote:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    post:
+      tags: [projects]
+      operationId: promoteProject
+      summary: Make a project a persistent systemd --user service
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/demote:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    post:
+      tags: [projects]
+      operationId: demoteProject
+      summary: Turn a persistent service back into an ephemeral project
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /projects/{name}/logs:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    get:
+      tags: [processes]
+      operationId: projectLogs
+      summary: Last lines of a project's log
+      parameters:
+        - name: n
+          in: query
+          description: Number of lines to return.
+          schema: {type: integer, default: 200}
+      responses:
+        "200":
+          description: Log tail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [logs]
+                properties:
+                  logs: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+  /claim:
+    post:
+      tags: [discovery]
+      operationId: claim
+      summary: Adopt whatever listens on a port into the registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port, name]
+              properties:
+                port: {type: integer}
+                name: {type: string}
+      responses:
+        "200":
+          description: The project created from the listener.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Project"}
+        "400": {$ref: "#/components/responses/Error"}
+  /scan:
+    post:
+      tags: [discovery]
+      operationId: scan
+      summary: Register draft projects found under the configured roots
+      responses:
+        "200":
+          description: Projects added by this scan (existing names are skipped).
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items: {$ref: "#/components/schemas/Project"}
+        "400": {$ref: "#/components/responses/Error"}
+  /groups:
+    get:
+      tags: [groups]
+      operationId: listGroups
+      summary: List groups
+      responses:
+        "200":
+          description: All groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Group"}
+    post:
+      tags: [groups]
+      operationId: upsertGroup
+      summary: Create or replace a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Group"}
+      responses:
+        "200":
+          description: The stored group.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Group"}
+        "400": {$ref: "#/components/responses/Error"}
+  /groups/{name}:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    delete:
+      tags: [groups]
+      operationId: deleteGroup
+      summary: Delete a group (its projects stay registered)
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /groups/{name}/up:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    post:
+      tags: [groups]
+      operationId: groupUp
+      summary: Start every project of a group
+      responses:
+        "200":
+          description: One launch result per project.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/LaunchResult"}
+        "400": {$ref: "#/components/responses/Error"}
+  /groups/{name}/down:
+    parameters:
+      - {$ref: "#/components/parameters/Name"}
+    post:
+      tags: [groups]
+      operationId: groupDown
+      summary: Stop every project of a group
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /events:
+    get:
+      tags: [streams]
+      operationId: events
+      summary: Live ps table (Server-Sent Events)
+      description: |
+        Emits the `/ps` array as one JSON `data:` event immediately and then
+        every 2 seconds, until the client disconnects.
+      responses:
+        "200":
+          description: SSE stream.
+          content:
+            text/event-stream:
+              schema: {type: string}
+  /logs/stream:
+    get:
+      tags: [streams]
+      operationId: logStream
+      summary: Tail a project's log (Server-Sent Events)
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: Project name.
+          schema: {type: string}
+      responses:
+        "200":
+          description: SSE stream, one `data:` event per log line.
+          content:
+            text/event-stream:
+              schema: {type: string}
+  /instances/{port}/stop:
+    parameters:
+      - {$ref: "#/components/parameters/PortPath"}
+    post:
+      tags: [processes]
+      operationId: stopInstance
+      summary: Stop whatever listens on a port
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
+  /instances/{port}/restart:
+    parameters:
+      - {$ref: "#/components/parameters/PortPath"}
+    post:
+      tags: [processes]
+      operationId: restartInstance
+      summary: Restart whatever listens on a port
+      responses:
+        "200": {$ref: "#/components/responses/Launch"}
+        "400": {$ref: "#/components/responses/Error"}
+  /fs:
+    get:
+      tags: [discovery]
+      operationId: browse
+      summary: List sub-directories of a path
+      parameters:
+        - name: path
+          in: query
+          description: Directory to list. Defaults to the first scan root, else $HOME.
+          schema: {type: string}
+      responses:
+        "200":
+          description: Directory listing (hidden directories omitted).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/FSListing"}
+        "400": {$ref: "#/components/responses/Error"}
+  /detect:
+    get:
+      tags: [discovery]
+      operationId: detect
+      summary: Detect the stack of a directory
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: Detection result; `ok` is false when nothing was recognised.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: {type: boolean}
+                  stack: {type: string}
+                  cmd:
+                    type: array
+                    nullable: true
+                    description: "null when nothing was recognised."
+                    items: {type: string}
+                  prefer_port: {type: integer}
+                  kind:
+                    type: string
+                    enum: ["", native, docker]
+                    description: 'Empty when nothing was recognised.'
+components:
+  parameters:
+    Name:
+      name: name
+      in: path
+      required: true
+      schema: {type: string}
+    PortPath:
+      name: port
+      in: path
+      required: true
+      schema: {type: integer}
+    Port:
+      name: port
+      in: query
+      description: Force this port instead of the preferred/auto-chosen one.
+      schema: {type: integer}
+    Force:
+      name: force
+      in: query
+      description: Start even when the port is taken by another listener.
+      schema: {type: boolean}
+  responses:
+    OK:
+      description: Done.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: {type: boolean, example: true}
+    Error:
+      description: Request failed.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+    Launch:
+      description: The unit that was started.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/LaunchResult"}
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+    LaunchResult:
+      description: |
+        Outcome of a start/restart. Field names are capitalised because the Go
+        struct has no JSON tags yet; they are part of v1 as they stand today.
+      type: object
+      properties:
+        Project: {type: string}
+        Unit: {type: string, description: "systemd unit, pm-<name>.service"}
+        Port: {type: integer}
+        URL: {type: string}
+        Note: {type: string}
+    PortStrategy:
+      type: object
+      properties:
+        kind: {type: string, description: "Label: vite, next, django, flutter, env, none."}
+        flag: {type: string, example: "--port"}
+        env: {type: string, example: PORT}
+        template: {type: string, example: "runserver 0.0.0.0:{port}"}
+    ProjectInput:
+      type: object
+      description: |
+        Body of `POST /projects`. Only `name` is validated; everything else is
+        optional and the daemon stores defaults for `kind` and `tier`. The
+        route's response is described by `ProjectEcho`.
+      required: [name]
+      properties:
+        name: {type: string}
+        dir: {type: string}
+        cmd:
+          type: array
+          nullable: true
+          items: {type: string}
+        kind: {type: string, enum: [native, docker], description: "Defaults to native when stored."}
+        tier: {type: string, enum: [ephemeral, service], description: "Defaults to ephemeral when stored."}
+        prefer_port: {type: integer}
+        port_strategy: {$ref: "#/components/schemas/PortStrategy"}
+        host: {type: string, description: "<host>.localhost; defaults to name."}
+        stack: {type: string}
+        auto_restart: {type: boolean}
+        group: {type: string}
+        draft:
+          type: boolean
+          description: Produced by scan and not yet confirmed.
+    ProjectEcho:
+      type: object
+      description: |
+        Response of `POST /projects`: the request body echoed back as sent,
+        before the defaults are applied. `kind` and `tier` therefore come back
+        as `""` when the request omitted them, and `cmd` and `port_strategy`
+        as `null` and `{}`.
+      required: [name]
+      properties:
+        name: {type: string}
+        dir: {type: string}
+        cmd:
+          type: array
+          nullable: true
+          items: {type: string}
+        kind: {type: string, enum: ["", native, docker], description: 'Empty when the request omitted it.'}
+        tier: {type: string, enum: ["", ephemeral, service], description: 'Empty when the request omitted it.'}
+        prefer_port: {type: integer}
+        port_strategy: {$ref: "#/components/schemas/PortStrategy"}
+        host: {type: string}
+        stack: {type: string}
+        auto_restart: {type: boolean}
+        group: {type: string}
+        draft: {type: boolean}
+    Project:
+      type: object
+      description: A project as stored in the registry (defaults applied).
+      required: [name, dir, cmd, kind, tier]
+      properties:
+        name: {type: string}
+        dir: {type: string}
+        cmd:
+          type: array
+          nullable: true
+          items: {type: string}
+        kind: {type: string, enum: [native, docker]}
+        tier: {type: string, enum: [ephemeral, service]}
+        prefer_port: {type: integer}
+        port_strategy: {$ref: "#/components/schemas/PortStrategy"}
+        host: {type: string, description: "<host>.localhost; defaults to name."}
+        stack: {type: string}
+        auto_restart: {type: boolean}
+        group: {type: string}
+        draft:
+          type: boolean
+          description: Produced by scan and not yet confirmed.
+    Group:
+      type: object
+      description: |
+        `name` is required by this contract but the daemon does not validate
+        it yet: `POST /groups` with `{}` stores a group named `""`. Clients
+        must always send a non-empty name.
+      required: [name]
+      properties:
+        name: {type: string}
+        projects:
+          type: array
+          nullable: true
+          description: "null when the request omitted it."
+          items: {type: string}
+    Row:
+      type: object
+      required: [name, port, url, tier, status, kind]
+      properties:
+        name: {type: string, description: '"?" for unclaimed listeners.'}
+        port: {type: integer}
+        url: {type: string, description: "http://<host>.localhost (via proxy)."}
+        local_url: {type: string, description: "http://localhost:<port>."}
+        tier: {type: string}
+        status: {type: string, enum: [up, down, unclaimed]}
+        kind: {type: string}
+        stack: {type: string}
+        source: {type: string}
+        pid: {type: integer}
+        unit: {type: string}
+        group: {type: string}
+        cmd: {type: string}
+        cwd: {type: string}
+        docker: {type: boolean}
+        draft: {type: boolean}
+        system:
+          type: boolean
+          description: Unmanaged listener with no PID (system/root process).
+    FSEntry:
+      type: object
+      required: [name, path, is_dir]
+      properties:
+        name: {type: string}
+        path: {type: string}
+        is_dir: {type: boolean}
+        stack: {type: string, description: Detected stack when it is a project directory.}
+    FSListing:
+      type: object
+      required: [path, parent, entries]
+      properties:
+        path: {type: string}
+        parent: {type: string}
+        entries:
+          type: array
+          nullable: true
+          items: {$ref: "#/components/schemas/FSEntry"}
