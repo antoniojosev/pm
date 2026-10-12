@@ -1,7 +1,7 @@
 // Package client is the official Go client of the pm daemon's HTTP API v1.
 //
-// It uses only the standard library, so importing it adds nothing to your
-// module graph. The API it speaks is documented in docs/api/openapi.yaml.
+// It imports only the standard library: no third-party package is compiled
+// into your binary. The API it speaks is documented in docs/api/openapi.yaml.
 //
 //	c := client.New("http://127.0.0.1:9797")
 //	lease, err := c.Leases.Create(ctx, client.LeaseRequest{Owner: "wt-qa", Count: 2})
@@ -77,13 +77,16 @@ func New(baseURL string, opts ...Option) *Client {
 
 // Version asks the daemon who it is and what the host offers. When the daemon
 // speaks another API generation than APIVersion it returns the info it got
-// together with a *VersionError; a daemon too old to have the endpoint gives
-// the same error with Got 0.
+// together with a *VersionError. A daemon too old to have the endpoint gives
+// the same error with Got 0, whether it answers 404 or, like pm v0.1.0 whose
+// dashboard answers any unknown path, 200 with something that is not the
+// version JSON (index.html) or JSON without an `api` field.
 func (c *Client) Version(ctx context.Context) (VersionInfo, error) {
 	var v VersionInfo
 	err := c.call(ctx, http.MethodGet, "/version", nil, nil, &v)
 	var ae *Error
-	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+	var de *decodeError
+	if (errors.As(err, &ae) && ae.Status == http.StatusNotFound) || errors.As(err, &de) {
 		return v, &VersionError{Want: APIVersion}
 	}
 	if err != nil {
@@ -235,7 +238,7 @@ func (c *Client) call(ctx context.Context, method, path string, q url.Values, in
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("pm: %s %s: unexpected answer: %w", method, full, err)
+		return &decodeError{err: fmt.Errorf("pm: %s %s: unexpected answer: %w", method, full, err)}
 	}
 	return nil
 }

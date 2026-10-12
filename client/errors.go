@@ -50,3 +50,11 @@ type Error struct {
 func (e *Error) Error() string {
 	return fmt.Sprintf("pm: %s %s: %d: %s", e.Method, e.Path, e.Status, e.Message)
 }
+
+// decodeError is a 2xx answer that is not the JSON the API promises: a
+// dashboard's index.html, a proxy's page. Version reads it as a daemon that
+// does not serve the API.
+type decodeError struct{ err error }
+
+func (e *decodeError) Error() string { return e.err.Error() }
+func (e *decodeError) Unwrap() error { return e.err }

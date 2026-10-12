@@ -101,17 +101,50 @@ func TestAnotherAPIGenerationFailsClearly(t *testing.T) {
 	}
 }
 
+// TestADaemonWithoutTheVersionEndpointIsIncompatible covers every way a pm
+// older than API v1 can answer GET /api/v1/version. The released v0.1.0 does
+// not say 404: its dashboard answers any unknown path with 200 and index.html.
 func TestADaemonWithoutTheVersionEndpointIsIncompatible(t *testing.T) {
-	srv := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(srv.Close)
-	c := client.New(srv.URL)
-	_, err := c.Version(context.Background())
-	var ve *client.VersionError
-	if !errors.As(err, &ve) || ve.Got != 0 || !errors.Is(err, client.ErrIncompatible) {
-		t.Fatalf("err = %v", err)
+	cases := map[string]http.HandlerFunc{
+		"404": func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
+		"dashboard fallback": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			io.WriteString(w, "<!doctype html><html><head><title>pm</title></head><body><div id=app></div></body></html>")
+		},
+		"json without api": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"version":"v0.1.0"}`)
+		},
 	}
-	if !strings.Contains(err.Error(), "upgrade pm") {
-		t.Fatalf("message gives no way out: %q", err)
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(h)
+			t.Cleanup(srv.Close)
+			c := client.New(srv.URL)
+			_, err := c.Version(context.Background())
+			var ve *client.VersionError
+			if !errors.As(err, &ve) || ve.Got != 0 || ve.Want != client.APIVersion || !errors.Is(err, client.ErrIncompatible) {
+				t.Fatalf("err = %v", err)
+			}
+			if !strings.Contains(err.Error(), "upgrade pm") {
+				t.Fatalf("message gives no way out: %q", err)
+			}
+			// The automatic check says the same before any other request.
+			if err := c.Stop(context.Background(), "x"); !errors.Is(err, client.ErrIncompatible) {
+				t.Fatalf("Stop err = %v", err)
+			}
+		})
+	}
+}
+
+// A 2xx that is not JSON on any other endpoint is not an API mismatch.
+func TestGarbageAnswerOnAnotherEndpointIsNotAMismatch(t *testing.T) {
+	_, c := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "<!doctype html>")
+	})
+	_, err := c.Leases.List(context.Background(), "")
+	if err == nil || errors.Is(err, client.ErrIncompatible) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -285,6 +318,9 @@ func TestContextCancelsTheRequest(t *testing.T) {
 	defer cancel()
 	if _, err := client.New(srv.URL).Version(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the context's deadline", err)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("hits = %d, want the one request that was cancelled", n)
 	}
 }
 

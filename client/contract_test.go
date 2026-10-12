@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -27,6 +28,14 @@ import (
 // is ever started, nothing leaves the process.
 func contractEnv(t *testing.T) (*client.Client, *testfake.Systemd) {
 	t.Helper()
+	srv, sd := contractServer(t, nil)
+	return client.New(srv.URL), sd
+}
+
+// contractServer is contractEnv's server; wrap, when not nil, sits in front of
+// the daemon's handler.
+func contractServer(t *testing.T, wrap func(http.Handler) http.Handler) (*httptest.Server, *testfake.Systemd) {
+	t.Helper()
 	sd := testfake.Install(t) // PATH holds only the fakes
 	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
@@ -47,9 +56,13 @@ func contractEnv(t *testing.T) (*client.Client, *testfake.Systemd) {
 	svc := api.New(paths, store, nil)
 	svc.Run.Snap = func() ([]detector.Instance, error) { return nil, nil }
 	svc.PortFree = func(int) bool { return true }
-	srv := httptest.NewServer(daemon.New(svc, 0).Handler())
+	var h http.Handler = daemon.New(svc, 0).Handler()
+	if wrap != nil {
+		h = wrap(h)
+	}
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return client.New(srv.URL), sd
+	return srv, sd
 }
 
 // TestClientAgainstTheDaemon drives the whole client surface through the real
@@ -260,4 +273,40 @@ func jsonFields(rt reflect.Type) map[string]string {
 		out[name] = kind + "," + opts
 	}
 	return out
+}
+
+// TestAnOldDaemonWithTheDashboardIsIncompatible is pm v0.1.0 as it really
+// behaves: it has no /api/v1/version, and its dashboard answers every unknown
+// path, API ones included, with 200 and index.html. Here that is the current
+// daemon's own dashboard handler, reached by sending the version request to a
+// path the API does not serve.
+func TestAnOldDaemonWithTheDashboardIsIncompatible(t *testing.T) {
+	srv, _ := contractServer(t, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/version" {
+				r = r.Clone(r.Context())
+				r.URL.Path = "/api/v1/no-such-endpoint"
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	// Precondition: the fallback really answers 200 HTML, not a 404.
+	res, err := http.Get(srv.URL + "/api/v1/no-such-endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/html") {
+		t.Skipf("this build serves no dashboard fallback (status %d, %q)", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+
+	c := client.New(srv.URL)
+	_, err = c.Version(context.Background())
+	var ve *client.VersionError
+	if !errors.As(err, &ve) || ve.Got != 0 || !errors.Is(err, client.ErrIncompatible) {
+		t.Fatalf("Version err = %v", err)
+	}
+	if _, err := c.Leases.List(context.Background(), ""); !errors.Is(err, client.ErrIncompatible) {
+		t.Fatalf("Leases.List err = %v", err)
+	}
 }

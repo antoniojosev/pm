@@ -5,8 +5,8 @@ processes on a development machine, with one owner for all of them.
 
     go get github.com/antoniojosev/pm/client
 
-Standard library only; nothing is added to your module graph. The API it speaks
-is documented in [`docs/api/openapi.yaml`](../docs/api/openapi.yaml).
+Imports only the standard library: no third-party package is compiled into your
+binary. The API it speaks is documented in [`docs/api/openapi.yaml`](../docs/api/openapi.yaml).
 
     c := client.New("http://127.0.0.1:9797")
     lease, _ := c.Leases.Create(ctx, client.LeaseRequest{Owner: "wt-qa", Count: 2})
