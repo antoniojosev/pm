@@ -12,7 +12,7 @@ test: ## run the test suite with the race detector
 
 vet: ## static checks
 	go vet ./...
-	@test -z "$$(gofmt -l cmd internal)" || { echo "gofmt needed:"; gofmt -l cmd internal; exit 1; }
+	@test -z "$$(gofmt -l cmd internal client)" || { echo "gofmt needed:"; gofmt -l cmd internal client; exit 1; }
 
 cover: ## per-package coverage summary
 	go test -race -cover ./...
