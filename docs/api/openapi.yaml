@@ -27,6 +27,7 @@ tags:
   - name: processes
   - name: groups
   - name: leases
+  - name: owners
   - name: discovery
   - name: streams
 paths:
@@ -403,6 +404,57 @@ paths:
       responses:
         "200": {$ref: "#/components/responses/OK"}
         "400": {$ref: "#/components/responses/Error"}
+  /owners/{owner}/stop:
+    parameters:
+      - {$ref: "#/components/parameters/OwnerPath"}
+    post:
+      tags: [owners]
+      operationId: stopOwner
+      summary: Stop everything that belongs to an owner
+      description: |
+        Stops the owner's registered projects that are running, the processes
+        it started with `POST /run` (a stopped run is forgotten, so nothing of
+        it is left in `/ps`) and every live process that carries
+        `PM_OWNER=<owner>` in its environment without being one of those, for
+        instance one a script left running. Its port leases are kept, so the
+        owner can start again on the same ports; use `DELETE /owners/{owner}`
+        to release them as well.
+
+        An owner with nothing running is not an error: `stopped` is empty. If
+        something cannot be stopped the rest still is, and the answer is a 400
+        whose body adds the `OwnerResult` fields to `error`, so the caller
+        knows what went down. The owner name is matched case-insensitively.
+      responses:
+        "200":
+          description: What was stopped.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OwnerResult"}
+        "400": {$ref: "#/components/responses/Error"}
+  /owners/{owner}:
+    parameters:
+      - {$ref: "#/components/parameters/OwnerPath"}
+    delete:
+      tags: [owners]
+      operationId: deleteOwner
+      summary: Stop everything that belongs to an owner and release its leases
+      description: |
+        Does what `POST /owners/{owner}/stop` does and then releases every
+        lease of the owner, so that afterwards `/ps` and `/leases` show no
+        trace of it. Registered projects (not runs) that name the owner stay in
+        the catalog, stopped, exactly as after `POST /projects/{name}/stop`.
+
+        The leases are released only when everything was stopped: if
+        something could not be, the answer is a 400 as for the stop and the
+        leases are kept (that process may still hold their ports). The call can
+        be repeated. An owner with nothing is not an error.
+      responses:
+        "200":
+          description: What was stopped and which leases were released.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OwnerResult"}
+        "400": {$ref: "#/components/responses/Error"}
   /events:
     get:
       tags: [streams]
@@ -419,11 +471,22 @@ paths:
         - `lease.created`: a lease was taken; `data` is the `Lease`.
         - `lease.released`: a lease was released; `data` is the `Lease` as it
           was.
+        - `owner.stopped`: an owner was stopped (`POST /owners/{owner}/stop`,
+          or a `DELETE` that could not finish); `data` is the `OwnerResult`.
+        - `owner.deleted`: an owner was stopped and its leases released
+          (`DELETE /owners/{owner}`); `data` is the `OwnerResult`. Each
+          released lease also arrives as its own `lease.released`.
 
         A lease change made through the daemon is sent at once; one made by
         another process (the `pm lease` CLI) within 2 seconds. Only changes
         after the client connected are sent: read `GET /leases` for the
         starting point.
+
+        `owner.*` events are sent as the daemon performs the operation (HTTP
+        API or MCP `pm_owner_down`) and only when something was stopped or
+        released. `pm down --owner` run from the CLI is another process and
+        does not publish them; the `lease.released` events of the leases it
+        releases do arrive.
       responses:
         "200":
           description: SSE stream.
@@ -522,6 +585,12 @@ components:
       in: path
       required: true
       schema: {type: string}
+    OwnerPath:
+      name: owner
+      in: path
+      required: true
+      description: 'Owner name: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 characters. Matched case-insensitively.'
+      schema: {type: string, example: wt-qa}
     PortPath:
       name: port
       in: path
@@ -615,7 +684,7 @@ components:
         env:
           type: object
           additionalProperties: {type: string}
-          description: 'Environment variables to add. Names are letters, digits and `_`; `PM_PROJECT` is reserved. Never stored by pm.'
+          description: 'Environment variables to add. Names are letters, digits and `_`; `PM_PROJECT` and `PM_OWNER` are reserved (pm sets them to the run''s name and owner). Never stored by pm.'
         limits: {$ref: "#/components/schemas/Limits"}
         compose:
           allOf: [{$ref: "#/components/schemas/Compose"}]
@@ -651,6 +720,39 @@ components:
           type: array
           description: The ports the run holds, as requested. An empty array when none.
           items: {type: integer}
+    OwnerResult:
+      type: object
+      description: |
+        What stopping or deleting an owner did. On a failure the same fields
+        come back next to `error` in the 400 body.
+      required: [owner, stopped, leases_released]
+      properties:
+        owner: {type: string, example: wt-qa}
+        stopped:
+          type: array
+          description: Everything brought down, in the order it was stopped. An empty array when there was nothing.
+          items:
+            type: object
+            required: [kind]
+            properties:
+              kind:
+                type: string
+                enum: [project, run, process, container]
+                description: |
+                  `project`: a registered project that was running. `run`: a
+                  process started with `POST /run`, now forgotten. `process`:
+                  a live process that only carries `PM_OWNER`. `container`: a
+                  docker container that carries it.
+              name: {type: string, description: "Project, run or container name."}
+              pid: {type: integer, description: "Process id, for `process`."}
+        leases_released:
+          type: array
+          description: Ids of the leases released. Always empty for `POST /owners/{owner}/stop`.
+          items: {type: string, example: l-3f9a1c0b7d2e}
+        errors:
+          type: array
+          description: One message per thing that could not be stopped. Present only in a 400 body.
+          items: {type: string}
     Lease:
       type: object
       required: [id, owner, ports, created_at]

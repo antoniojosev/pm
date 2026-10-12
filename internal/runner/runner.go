@@ -168,6 +168,11 @@ func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
 		"-p", "StandardOutput=append:" + log,
 		"-p", "StandardError=append:" + log,
 	}
+	if p.Owner != "" {
+		// The second marker: lets the detector (and pm down --owner) tell whose
+		// process this is even when the registry entry is gone.
+		args = append(args, "--setenv="+config.EnvOwner+"="+p.Owner)
+	}
 	for _, prop := range limitProps(p.Limits) {
 		args = append(args, "-p", prop)
 	}
@@ -277,7 +282,7 @@ func (r *Runner) RestartInstance(port int) (Result, error) {
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		relaunch := registry.Project{Name: name, Dir: cwd}
+		relaunch := registry.Project{Name: name, Dir: cwd, Owner: i.Owner} // keeps its PM_OWNER marker
 		if sp, ok := r.Store.Get(name); ok {
 			relaunch.Limits = sp.Limits // a registered project keeps its caps
 		}
@@ -537,6 +542,9 @@ func (r *Runner) writeUnit(p registry.Project, cmd, env []string) error {
 	b.WriteString("[Service]\n")
 	fmt.Fprintf(&b, "WorkingDirectory=%s\n", p.Dir)
 	fmt.Fprintf(&b, "Environment=%s=%s\n", config.EnvMarker, p.Name)
+	if p.Owner != "" {
+		fmt.Fprintf(&b, "Environment=%s=%s\n", config.EnvOwner, p.Owner)
+	}
 	for _, e := range env {
 		fmt.Fprintf(&b, "Environment=%s\n", e)
 	}

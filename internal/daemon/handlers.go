@@ -57,6 +57,8 @@ func (d *Daemon) apiRoutes() []Route {
 		{"POST", "/leases", d.hCreateLease},
 		{"GET", "/leases", d.hLeases},
 		{"DELETE", "/leases/{id}", d.hReleaseLease},
+		{"POST", "/owners/{owner}/stop", d.hOwnerStop},
+		{"DELETE", "/owners/{owner}", d.hOwnerDelete},
 		{"GET", "/events", d.hEvents},
 		{"GET", "/logs/stream", d.hLogStream},
 		{"POST", "/instances/{port}/stop", d.hInstanceStop},
@@ -357,12 +359,40 @@ func (d *Daemon) hReleaseLease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ok())
 }
 
+// hOwnerStop stops everything that belongs to an owner and keeps its leases.
+func (d *Daemon) hOwnerStop(w http.ResponseWriter, r *http.Request) {
+	res, err := d.svc.StopOwner(r.PathValue("owner"))
+	writeOwnerResult(w, res, err)
+}
+
+// hOwnerDelete stops everything that belongs to an owner and releases its leases.
+func (d *Daemon) hOwnerDelete(w http.ResponseWriter, r *http.Request) {
+	res, err := d.svc.DeleteOwner(r.PathValue("owner"))
+	writeOwnerResult(w, res, err)
+}
+
+// writeOwnerResult answers an owner operation. A failure is the usual 400
+// {"error": ...}, plus the result fields so the caller still learns what was
+// stopped before it.
+func writeOwnerResult(w http.ResponseWriter, res api.OwnerResult, err error) {
+	if err == nil {
+		writeJSON(w, 200, res)
+		return
+	}
+	writeJSON(w, 400, struct {
+		Error string `json:"error"`
+		api.OwnerResult
+	}{err.Error(), res})
+}
+
 // hEvents streams live state as SSE. The unnamed `data:` frames carry the ps
 // table, immediately and then every 2s. Named frames report changes: a
 // `lease.created` or `lease.released` event with the lease as data, as soon as
 // the daemon makes the change and within one tick when another process (the
 // CLI) does. A client sees only the leases that change after it connected;
-// GET /leases gives the starting point.
+// GET /leases gives the starting point. `owner.stopped` and `owner.deleted`
+// carry the owner result, as soon as the daemon (API or MCP) stops or deletes
+// an owner; the CLI, a separate process, does not publish them.
 func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -376,6 +406,8 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	// Take the wake-up channel before the baseline so a change in between is
 	// not lost: it either shows in the baseline or closes the channel.
 	wake := d.svc.LeaseChanged()
+	ownerEvents, cancelOwner := d.svc.SubscribeOwnerEvents()
+	defer cancelOwner()
 	known := leasesByID(d.svc.Leases(""))
 
 	send := func() {
@@ -408,6 +440,10 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		case <-wake:
 			wake = d.svc.LeaseChanged()
 			sendLeaseChanges()
+		case ev := <-ownerEvents:
+			b, _ := json.Marshal(ev.Result)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, b)
+			flusher.Flush()
 		case <-ticker.C:
 			send()
 			sendLeaseChanges()

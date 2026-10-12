@@ -29,6 +29,7 @@ type Service struct {
 	PortFree func(port int) bool
 
 	leaseNotify notifier
+	ownerHub    ownerHub
 }
 
 // New wires a Service around a store.
@@ -60,8 +61,9 @@ type Row struct {
 	PID     int    `json:"pid,omitempty"`
 	Unit    string `json:"unit,omitempty"`
 	Group   string `json:"group,omitempty"`
-	// Owner is who the project belongs to; set for processes started by
-	// specification (pm run).
+	// Owner is who the project belongs to: set for processes started by
+	// specification (pm run), and on an unclaimed process that carries a
+	// PM_OWNER marker.
 	Owner  string `json:"owner,omitempty"`
 	Cmd    string `json:"cmd,omitempty"`
 	Cwd    string `json:"cwd,omitempty"`
@@ -180,6 +182,7 @@ func (s *Service) PS() ([]Row, error) {
 			Cmd:    i.Cmd,
 			Cwd:    i.Cwd,
 			Docker: i.Docker,
+			Owner:  i.Owner,
 			System: i.PID == 0 && !i.Docker,
 		})
 	}
@@ -299,6 +302,7 @@ func (s *Service) Claim(port int, name string) (registry.Project, error) {
 		if i.Docker {
 			p.Kind = registry.KindDocker
 		}
+		p.Owner = i.Owner // adopted with its PM_OWNER marker: pm keeps grouping it
 		if dir != "" {
 			if det, ok := scan.Detect(dir); ok {
 				p.Cmd = det.Cmd

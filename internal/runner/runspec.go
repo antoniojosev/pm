@@ -37,7 +37,7 @@ type RunSpec struct {
 	Dir string `json:"dir"`
 	// Cmd is the argv to execute; Cmd[0] is looked up in the user manager's PATH.
 	Cmd []string `json:"cmd"`
-	// Env adds environment variables. PM_PROJECT is reserved. The values reach
+	// Env adds environment variables. PM_PROJECT and PM_OWNER are reserved. The values reach
 	// systemd only: they are never written to the registry.
 	Env map[string]string `json:"env,omitempty"`
 	// Limits caps memory and CPU of the unit (needs cgroups v2).
@@ -100,6 +100,9 @@ func (s RunSpec) Normalize() (RunSpec, error) {
 		}
 		if k == config.EnvMarker {
 			return s, fmt.Errorf("env %s is reserved: pm sets it to the run's name", k)
+		}
+		if k == config.EnvOwner {
+			return s, fmt.Errorf("env %s is reserved: pm sets it to the run's owner", k)
 		}
 		if strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
 			return s, fmt.Errorf("invalid value for env %s: must be valid text without NUL bytes", k)

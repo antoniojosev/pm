@@ -141,7 +141,7 @@ func (c *mcpClient) call(tool, args string) (text string, isError bool) {
 func TestToolsAreAdvertised(t *testing.T) {
 	c := newMCPClient(t)
 	raw := c.rpc("tools/list", `{}`)
-	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down", "pm_run"} {
+	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down", "pm_run", "pm_owner_down"} {
 		if !strings.Contains(raw, `"name":"`+tool+`"`) {
 			t.Errorf("tool %s not advertised", tool)
 		}
@@ -288,5 +288,67 @@ func TestPmRunErrorsAreToolErrors(t *testing.T) {
 	}
 	if len(sd.Calls("systemd-run")) != 0 {
 		t.Fatal("systemd-run ran for a refused call")
+	}
+}
+
+func TestPmOwnerDownStopsTheOwnersRuns(t *testing.T) {
+	c := newMCPClient(t)
+	sd := testfake.Install(t)
+	dir, _ := json.Marshal(t.TempDir())
+	for _, name := range []string{"a", "b"} {
+		args := `{"name":"` + name + `","dir":` + string(dir) + `,"cmd":["sleep","100"],"owner":"wt-qa"}`
+		if out, isErr := c.call("pm_run", args); isErr {
+			t.Fatalf("pm_run = %s", out)
+		}
+	}
+	if out, isErr := c.call("pm_run", `{"name":"keep","dir":`+string(dir)+`,"cmd":["sleep","100"],"owner":"wt-dev"}`); isErr {
+		t.Fatalf("pm_run = %s", out)
+	}
+
+	out, isErr := c.call("pm_owner_down", `{"owner":"wt-qa"}`)
+	if isErr {
+		t.Fatalf("pm_owner_down = %s", out)
+	}
+	var res struct {
+		Owner   string `json:"owner"`
+		Stopped []struct {
+			Kind, Name string
+		} `json:"stopped"`
+		LeasesReleased []string `json:"leases_released"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Owner != "wt-qa" || len(res.Stopped) != 2 || res.LeasesReleased == nil {
+		t.Fatalf("result = %s (%v)", out, err)
+	}
+	if sd.Active("pm-a.service") || sd.Active("pm-b.service") || !sd.Active("pm-keep.service") {
+		t.Fatal("wrong units stopped")
+	}
+	out, _ = c.call("pm_list", `{}`)
+	if strings.Contains(out, `"owner": "wt-qa"`) || !strings.Contains(out, `"name": "keep"`) {
+		t.Fatalf("pm_list after pm_owner_down = %s", out)
+	}
+
+	// nothing to do is not an error; keep_leases is accepted; a bad owner is
+	if out, isErr := c.call("pm_owner_down", `{"owner":"wt-qa","keep_leases":true}`); isErr || !strings.Contains(out, `"stopped": []`) {
+		t.Fatalf("pm_owner_down on nothing = %v %s", isErr, out)
+	}
+	if out, isErr := c.call("pm_owner_down", `{"owner":"a b"}`); !isErr || !strings.Contains(out, "invalid owner") {
+		t.Fatalf("bad owner = %v %s", isErr, out)
+	}
+	if out, isErr := c.call("pm_owner_down", `{}`); !isErr || !strings.Contains(out, "owner is required") {
+		t.Fatalf("no owner = %v %s", isErr, out)
+	}
+}
+
+func TestPmOwnerDownReportsPartialFailures(t *testing.T) {
+	c := newMCPClient(t)
+	sd := testfake.Install(t)
+	dir, _ := json.Marshal(t.TempDir())
+	if out, isErr := c.call("pm_run", `{"name":"a","dir":`+string(dir)+`,"cmd":["sleep","100"],"owner":"wt-qa"}`); isErr {
+		t.Fatalf("pm_run = %s", out)
+	}
+	sd.FailStop(t)
+	out, isErr := c.call("pm_owner_down", `{"owner":"wt-qa"}`)
+	if !isErr || !strings.Contains(out, "leases were kept") || !strings.Contains(out, `"errors"`) {
+		t.Fatalf("pm_owner_down = %v %s", isErr, out)
 	}
 }

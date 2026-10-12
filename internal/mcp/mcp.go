@@ -48,7 +48,7 @@ func register(s *server.MCPServer, svc *api.Service) {
 		mcp.WithString("name", mcp.Required(), mcp.Description("names the unit and what pm_stop takes: letters, digits, '.', '_' and '-'")),
 		mcp.WithString("dir", mcp.Required(), mcp.Description("working directory: an absolute path to an existing directory")),
 		mcp.WithArray("cmd", mcp.Required(), mcp.WithStringItems(), mcp.Description("the program and its arguments, as an argv (no shell)")),
-		mcp.WithObject("env", mcp.AdditionalProperties(map[string]any{"type": "string"}), mcp.Description("environment variables to add (PM_PROJECT is reserved); never stored")),
+		mcp.WithObject("env", mcp.AdditionalProperties(map[string]any{"type": "string"}), mcp.Description("environment variables to add (PM_PROJECT and PM_OWNER are reserved); never stored")),
 		mcp.WithObject("limits",
 			mcp.Properties(map[string]any{
 				"memory": map[string]any{"type": "string", "description": "MemoryMax, e.g. 512M, 2G or 50%"},
@@ -79,6 +79,25 @@ func register(s *server.MCPServer, svc *api.Service) {
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			err := svc.Stop(req.GetString("name", ""))
 			return textResult("stopped", err)
+		})
+
+	s.AddTool(mcp.NewTool("pm_owner_down",
+		mcp.WithDescription("Bring down everything that belongs to an owner (a worktree, a script, an agent): its projects, the processes it started with pm_run (they are forgotten once stopped) and any process that carries PM_OWNER=<owner>. Also releases the owner's port leases unless keep_leases is true. Returns {owner, stopped[], leases_released[]}; an owner with nothing is not an error. If something cannot be stopped the rest still is, and the leases are kept."),
+		mcp.WithString("owner", mcp.Required(), mcp.Description("the owner name, as given to pm_run or a lease")),
+		mcp.WithBoolean("keep_leases", mcp.Description("stop the processes but keep the port leases (default false)"))),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			owner := req.GetString("owner", "")
+			var res api.OwnerResult
+			var err error
+			if req.GetBool("keep_leases", false) {
+				res, err = svc.StopOwner(owner)
+			} else {
+				res, err = svc.DeleteOwner(owner)
+			}
+			if err != nil {
+				return mcp.NewToolResultError(ownerErrorText(res, err)), nil
+			}
+			return jsonResult(res, nil)
 		})
 
 	s.AddTool(mcp.NewTool("pm_restart",
@@ -191,6 +210,13 @@ func decodeRunSpec(req mcp.CallToolRequest) (runner.RunSpec, error) {
 		return spec, fmt.Errorf("invalid arguments: %w", err)
 	}
 	return spec, nil
+}
+
+// ownerErrorText is the error of a partial owner stop: the message plus what
+// was stopped before the failure, which the caller still needs.
+func ownerErrorText(res api.OwnerResult, err error) string {
+	b, _ := json.MarshalIndent(res, "", "  ")
+	return err.Error() + "\n" + string(b)
 }
 
 func jsonResult(v any, err error) (*mcp.CallToolResult, error) {
