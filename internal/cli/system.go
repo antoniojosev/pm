@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,10 +30,7 @@ func doctorCmd() *cobra.Command {
 				st := strings.TrimSpace(string(out))
 				return st, st == "running" || st == "degraded"
 			})
-			check("cgroup v2", func() (string, bool) {
-				_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
-				return "unified", err == nil
-			})
+			check("cgroup v2", func() (string, bool) { return cgroupCheck(cgroupControllers, userCgroupControllers()) })
 			check("systemd-run", bin("systemd-run"))
 			check("ss", bin("ss"))
 			check("docker", bin("docker"))
@@ -49,6 +48,43 @@ func doctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// cgroupControllers exists only on the unified (v2) cgroup hierarchy.
+const cgroupControllers = "/sys/fs/cgroup/cgroup.controllers"
+
+// userCgroupControllers lists the controllers delegated to the user manager
+// (user@UID.service). pm's units are --user units, so MemoryMax= and CPUQuota=
+// only take effect when memory and cpu appear here, not just at the root.
+func userCgroupControllers() string {
+	uid := strconv.Itoa(os.Getuid())
+	return filepath.Join("/sys/fs/cgroup/user.slice", "user-"+uid+".slice", "user@"+uid+".service", "cgroup.controllers")
+}
+
+// cgroupCheck reports whether pm's --mem/--cpu limits can be enforced: cgroups
+// v2 must be mounted and the user manager must have been delegated the memory
+// and cpu controllers. Without either, systemd accepts MemoryMax= and
+// CPUQuota= and ignores them, so the check fails with that consequence spelled
+// out.
+func cgroupCheck(rootControllers, userControllers string) (string, bool) {
+	if _, err := os.Stat(rootControllers); err != nil {
+		return "unavailable: --mem/--cpu limits will not be enforced (boot with systemd.unified_cgroup_hierarchy=1)", false
+	}
+	b, err := os.ReadFile(userControllers)
+	if err != nil {
+		return "unified, but the user manager's controllers are unreadable (" + userControllers + "): --mem/--cpu limits may not be enforced", false
+	}
+	have := strings.Fields(string(b))
+	var missing []string
+	for _, c := range []string{"memory", "cpu"} {
+		if !slices.Contains(have, c) {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) > 0 {
+		return "unified, but " + strings.Join(missing, " and ") + " not delegated to the user manager: --mem/--cpu limits will not be enforced (enable it with Delegate=memory cpu in a user@.service drop-in)", false
+	}
+	return "unified", true
 }
 
 // apiCheck asks the daemon for GET /api/v1/version and summarises it: release,

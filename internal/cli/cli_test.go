@@ -114,6 +114,11 @@ func TestRenderPS(t *testing.T) {
 		{Name: "api", Status: "down", Port: 8000, URL: "http://api.localhost", Tier: "service"},
 		{Name: "?", Status: "unclaimed", Port: 53},
 	}
+	failedRows := []api.Row{
+		rows[0],
+		{Name: "job", Status: "failed", Failure: "oom-kill", URL: "http://job.localhost", Tier: "ephemeral"},
+		rows[1],
+	}
 	render := func(rows []api.Row, opts psOpts) string {
 		out, _ := capture(t, func() { renderPS(os.Stdout, rows, opts) })
 		return out
@@ -139,6 +144,15 @@ func TestRenderPS(t *testing.T) {
 			[]string{"nothing running", "pm ps -a to see the 1 registered", "pm run -- <cmd>"}, nil},
 		{"nothing stopped", rows[:1], psOpts{stopped: true},
 			[]string{"nothing stopped"}, nil},
+		{"failed shows in the default view with its reason", failedRows, psOpts{},
+			[]string{"1 running · 1 failed", "web", "job", "failed: oom-kill", "1 stopped"},
+			[]string{"api.localhost"}},
+		{"failed alone is not nothing running", failedRows[1:2], psOpts{},
+			[]string{"nothing running · 1 failed", "job", "failed: oom-kill"}, nil},
+		{"all lists failed between running and stopped", failedRows, psOpts{all: true},
+			[]string{"1 running · 1 stopped · 1 failed", "job", "failed: oom-kill", "api"}, nil},
+		{"stopped view includes failed", failedRows, psOpts{stopped: true},
+			[]string{"1 stopped · 1 failed", "job", "api"}, []string{"web.localhost"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -377,5 +391,134 @@ func TestEditScanAndLogsCommands(t *testing.T) {
 	out, _, err = run(t, "logs", "svc", "-n", "2")
 	if err != nil || !strings.Contains(out, "two") {
 		t.Fatalf("logs: %v\n%s", err, out)
+	}
+}
+
+func TestLimitFlagsExist(t *testing.T) {
+	for name, c := range map[string]*cobra.Command{
+		"add": addCmd(), "edit": editCmd(), "start": startCmd(), "run": runCmd(),
+	} {
+		for _, f := range []string{"mem", "cpu"} {
+			if c.Flags().Lookup(f) == nil {
+				t.Errorf("pm %s has no --%s flag", name, f)
+			}
+		}
+	}
+}
+
+func TestProjectFromFlagsReadsLimits(t *testing.T) {
+	c := &cobra.Command{Use: "x"}
+	addProjectFlags(c)
+	if err := c.ParseFlags([]string{"--name", "web", "--mem", "256M", "--cpu", "150%"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectFromFlags(c).Limits; got != (registry.Limits{Memory: "256M", CPU: "150%"}) {
+		t.Fatalf("limits = %+v", got)
+	}
+}
+
+func TestAddAndEditLimits(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module svc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() registry.Limits {
+		t.Helper()
+		s, err := svc()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, ok := s.Get("svc")
+		if !ok {
+			t.Fatal("svc not registered")
+		}
+		return p.Limits
+	}
+
+	if _, _, err := run(t, "add", dir, "--name", "svc", "--mem", "256M", "--cpu", "50%"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "256M", CPU: "50%"}) {
+		t.Fatalf("after add: %+v", got)
+	}
+
+	// Editing one limit leaves the other alone.
+	if _, _, err := run(t, "edit", "svc", "--mem", "1G"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G", CPU: "50%"}) {
+		t.Fatalf("after editing memory: %+v", got)
+	}
+
+	// An unrelated edit keeps both.
+	if _, _, err := run(t, "edit", "svc", "--group", "core"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G", CPU: "50%"}) {
+		t.Fatalf("an edit that does not mention limits changed them: %+v", got)
+	}
+
+	// Passing an empty value clears that limit.
+	if _, _, err := run(t, "edit", "svc", "--cpu", ""); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G"}) {
+		t.Fatalf("after clearing cpu: %+v", got)
+	}
+
+	// Invalid values are refused and nothing changes.
+	if _, _, err := run(t, "edit", "svc", "--mem", "lots"); err == nil || !strings.Contains(err.Error(), "invalid memory limit") {
+		t.Fatalf("invalid limit accepted: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G"}) {
+		t.Fatalf("a rejected edit changed the project: %+v", got)
+	}
+}
+
+func TestCgroupCheck(t *testing.T) {
+	write := func(content string) string {
+		f := filepath.Join(t.TempDir(), "cgroup.controllers")
+		if err := os.WriteFile(f, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	root := write("cpuset cpu io memory pids")
+
+	if detail, ok := cgroupCheck(root, write("cpu memory pids")); !ok || detail != "unified" {
+		t.Fatalf("v2 with both controllers delegated: %q, %v", detail, ok)
+	}
+
+	detail, ok := cgroupCheck(missing, write("cpu memory"))
+	if ok {
+		t.Fatal("a missing cgroup v2 must fail the check")
+	}
+	for _, want := range []string{"--mem", "--cpu", "not be enforced"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("warning %q lacks %q", detail, want)
+		}
+	}
+
+	// v2 is mounted but the user manager was not delegated the controllers:
+	// systemd would accept MemoryMax=/CPUQuota= and silently ignore them.
+	for _, tc := range []struct {
+		user string
+		want string
+	}{
+		{"pids", "memory and cpu not delegated"},
+		{"cpu pids", "memory not delegated"},
+		{"memory pids", "cpu not delegated"},
+	} {
+		detail, ok := cgroupCheck(root, write(tc.user))
+		if ok || !strings.Contains(detail, tc.want) || !strings.Contains(detail, "not be enforced") {
+			t.Errorf("user controllers %q: %q, %v; want failure mentioning %q", tc.user, detail, ok, tc.want)
+		}
+	}
+
+	// An unreadable user cgroup cannot be verified: warn rather than pass.
+	if detail, ok := cgroupCheck(root, missing); ok || !strings.Contains(detail, "may not be enforced") {
+		t.Errorf("unreadable user controllers: %q, %v", detail, ok)
 	}
 }

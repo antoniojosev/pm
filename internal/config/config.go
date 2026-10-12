@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	// UnitPrefix namespaces every systemd unit pm creates, e.g. pm-myapp.scope.
+	// UnitPrefix namespaces every systemd unit pm creates, e.g. pm-myapp.service.
 	UnitPrefix = "pm-"
 	// EnvMarker is injected into every launched process so we can attribute it back.
 	EnvMarker = "PM_PROJECT"

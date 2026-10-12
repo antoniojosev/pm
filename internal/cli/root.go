@@ -130,12 +130,15 @@ func projectFromFlags(cmd *cobra.Command) registry.Project {
 	cmdline, _ := cmd.Flags().GetString("cmd")
 	host, _ := cmd.Flags().GetString("host")
 	group, _ := cmd.Flags().GetString("group")
+	mem, _ := cmd.Flags().GetString("mem")
+	cpu, _ := cmd.Flags().GetString("cpu")
 	p := registry.Project{
 		Name:       name,
 		Dir:        dir,
 		PreferPort: port,
 		Host:       host,
 		Group:      group,
+		Limits:     registry.Limits{Memory: mem, CPU: cpu},
 		Tier:       registry.TierEphemeral,
 		Kind:       registry.KindNative,
 	}

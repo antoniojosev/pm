@@ -1,11 +1,18 @@
 // Package registry is the persistent catalog of known projects and groups.
 package registry
 
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
 // Tier describes how a project is expected to run.
 type Tier string
 
 const (
-	// TierEphemeral is launched on demand as a transient systemd scope.
+	// TierEphemeral is launched on demand as a transient systemd service.
 	TierEphemeral Tier = "ephemeral"
 	// TierService is a persistent systemd --user service enabled at boot.
 	TierService Tier = "service"
@@ -33,6 +40,79 @@ type PortStrategy struct {
 	Template string `json:"template,omitempty"`
 }
 
+// Limits caps the resources of the unit pm launches. The values are handed to
+// systemd verbatim (MemoryMax= and CPUQuota=), so they need cgroups v2. A
+// memory cap also forbids swap (MemorySwapMax=0) so the kernel kills the
+// process instead of paging it out. A zero value means "no limit".
+type Limits struct {
+	// Memory is a MemoryMax= value: bytes with an optional K, M, G or T suffix
+	// (base 1024), a percentage of physical memory, or "infinity". E.g. "512M".
+	Memory string `json:"memory,omitempty"`
+	// CPU is a CPUQuota= value: a percentage of one CPU, so "150%" is a core
+	// and a half. E.g. "50%".
+	CPU string `json:"cpu,omitempty"`
+}
+
+var (
+	// Percentages take at most two decimals: systemd rejects finer ones
+	// ("12.345%", "0.001%") and silently ignores the line in a unit file.
+	memoryRe = regexp.MustCompile(`^(infinity|[0-9]+[KMGT]?|[0-9]+(\.[0-9]{1,2})?%)$`)
+	cpuRe    = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?%$`)
+)
+
+// IsZero reports whether no limit is set. It lets encoding/json drop an empty
+// limits object (omitzero).
+func (l Limits) IsZero() bool { return l.Memory == "" && l.CPU == "" }
+
+// Validate rejects values systemd would not understand. It matters beyond
+// typos: the values end up inside a unit file, so anything outside this
+// grammar (a newline, say) must never get that far.
+func (l Limits) Validate() error {
+	if l.Memory != "" && (!memoryRe.MatchString(l.Memory) || isZero(l.Memory) || memoryOver100(l.Memory)) {
+		return fmt.Errorf("invalid memory limit %q: use bytes with K, M, G or T (512M, 2G), a percentage up to 100%% (50%%) or infinity", l.Memory)
+	}
+	if l.CPU != "" && (!cpuRe.MatchString(l.CPU) || isZero(l.CPU)) {
+		return fmt.Errorf("invalid cpu limit %q: use a percentage of one CPU above zero, up to two decimals (50%%, 150%%)", l.CPU)
+	}
+	return nil
+}
+
+// memoryOver100 reports whether v is a percentage above 100%, which systemd
+// refuses for MemoryMax= (it is a share of physical memory).
+func memoryOver100(v string) bool {
+	num, ok := strings.CutSuffix(v, "%")
+	if !ok {
+		return false
+	}
+	f, err := strconv.ParseFloat(num, 64)
+	return err != nil || f > 100
+}
+
+// isZero reports whether a number-with-suffix value is zero ("0", "0M", "0.0%"):
+// systemd accepts them but they would starve the process, never what was meant.
+func isZero(v string) bool {
+	if v == "infinity" {
+		return false
+	}
+	for _, r := range v {
+		if r >= '1' && r <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Merge returns l with every field set in over replacing the one in l.
+func (l Limits) Merge(over Limits) Limits {
+	if over.Memory != "" {
+		l.Memory = over.Memory
+	}
+	if over.CPU != "" {
+		l.CPU = over.CPU
+	}
+	return l
+}
+
 // Project is a catalog entry. It is a template for launching; a running
 // instance may live on a different actual port (see collision handling).
 type Project struct {
@@ -47,8 +127,23 @@ type Project struct {
 	Stack        string       `json:"stack,omitempty"`
 	AutoRestart  bool         `json:"auto_restart,omitempty"`
 	Group        string       `json:"group,omitempty"`
+	// Limits caps memory and CPU of the launched unit (needs cgroups v2).
+	Limits Limits `json:"limits,omitzero"`
 	// Draft marks entries produced by scan that the user has not confirmed.
 	Draft bool `json:"draft,omitempty"`
+}
+
+// Validate checks the project's own consistency: valid limits, and none on a
+// docker project, where the unit only wraps the `docker compose` client while
+// the containers live outside its cgroup, so a cap would do nothing.
+func (p Project) Validate() error {
+	if err := p.Limits.Validate(); err != nil {
+		return err
+	}
+	if p.Kind == KindDocker && !p.Limits.IsZero() {
+		return fmt.Errorf("limits are not supported on docker projects: the unit only wraps the compose client, not the containers; set mem_limit and cpus in the compose file instead")
+	}
+	return nil
 }
 
 // Hostname returns the .localhost name this project answers to. The label is

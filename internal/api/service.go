@@ -42,18 +42,21 @@ type Row struct {
 	URL      string `json:"url"`                 // http://<host>.localhost (via proxy)
 	LocalURL string `json:"local_url,omitempty"` // http://localhost:<port> (direct, always works)
 	Tier     string `json:"tier"`
-	Status   string `json:"status"` // up | down | unclaimed
-	Kind     string `json:"kind"`
-	Stack    string `json:"stack,omitempty"`
-	Source   string `json:"source,omitempty"`
-	PID      int    `json:"pid,omitempty"`
-	Unit     string `json:"unit,omitempty"`
-	Group    string `json:"group,omitempty"`
-	Cmd      string `json:"cmd,omitempty"`
-	Cwd      string `json:"cwd,omitempty"`
-	Docker   bool   `json:"docker,omitempty"`
-	Draft    bool   `json:"draft,omitempty"`
-	System   bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
+	Status   string `json:"status"` // up | down | failed | unclaimed
+	// Failure is why a failed unit failed, as systemd reports it: "oom-kill"
+	// when the kernel enforced a memory limit, "exit-code", "signal"...
+	Failure string `json:"failure,omitempty"`
+	Kind    string `json:"kind"`
+	Stack   string `json:"stack,omitempty"`
+	Source  string `json:"source,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Unit    string `json:"unit,omitempty"`
+	Group   string `json:"group,omitempty"`
+	Cmd     string `json:"cmd,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Docker  bool   `json:"docker,omitempty"`
+	Draft   bool   `json:"draft,omitempty"`
+	System  bool   `json:"system,omitempty"` // unmanaged with no PID: system/root process, not manageable
 }
 
 // PS returns the docker-ps-like unified table: every registered project plus
@@ -82,6 +85,7 @@ func (s *Service) PS() ([]Row, error) {
 		}
 	}
 
+	failed := s.Run.FailedUnits()
 	var rows []Row
 	registered := map[string]bool{}
 	consumed := map[int]bool{} // live ports already linked to a registered project
@@ -118,6 +122,11 @@ func (s *Service) PS() ([]Row, error) {
 				r.LocalURL = fmt.Sprintf("http://localhost:%d", inst.Port)
 				consumed[inst.Port] = true
 			}
+		} else if reason, bad := failed[runner.UnitName(p.Name)]; bad {
+			// The unit died and systemd still holds it failed (e.g. the kernel
+			// OOM-killed it under its memory limit). Not the same as a clean stop.
+			r.Status = "failed"
+			r.Failure = reason
 		} else {
 			r.Status = "down"
 		}
@@ -181,10 +190,12 @@ func statusRank(s string) int {
 	switch s {
 	case "up":
 		return 0
-	case "down":
+	case "failed":
 		return 1
-	default:
+	case "down":
 		return 2
+	default:
+		return 3
 	}
 }
 

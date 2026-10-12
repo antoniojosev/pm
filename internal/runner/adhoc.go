@@ -52,6 +52,7 @@ func (r *Runner) RunAdhoc(dir string, cmd []string, opts AdhocOpts) (Result, err
 	if len(p.Cmd) == 0 {
 		return Result{}, fmt.Errorf("no command: use `pm run -- <cmd>` or register the project")
 	}
+	p.Limits = p.Limits.Merge(opts.Limits) // like cmd, explicit limits are remembered
 	p.Draft = false
 	if opts.Always {
 		p.Tier = registry.TierService
@@ -59,5 +60,9 @@ func (r *Runner) RunAdhoc(dir string, cmd []string, opts AdhocOpts) (Result, err
 	if err := r.Store.Upsert(p); err != nil {
 		return Result{}, err
 	}
-	return r.launch(p, opts.LaunchOpts)
+	// The limits are already merged into p (and stored); handing them to launch
+	// again would count as a per-start override, which service tier refuses.
+	launchOpts := opts.LaunchOpts
+	launchOpts.Limits = registry.Limits{}
+	return r.launch(p, launchOpts)
 }

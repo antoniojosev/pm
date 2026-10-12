@@ -42,6 +42,7 @@
   .st .dot{width:8px;height:8px;border-radius:50%}
   .st.up .dot{background:var(--up);box-shadow:0 0 7px var(--up)}
   .st.down .dot{background:var(--down)}
+  .st.failed .dot{background:var(--danger);box-shadow:0 0 7px var(--danger)}
   .st.unclaimed .dot{background:var(--unclaimed);box-shadow:0 0 7px var(--unclaimed)}
   .name{font-weight:600}
   .sub{color:var(--dim);font-size:12px;font-family:var(--mono)}
@@ -129,6 +130,10 @@
           <select id="f_tier"><option value="ephemeral">ephemeral</option><option value="service">service (permanent)</option></select></div>
         <div style="flex:1"><label>Group</label><input id="f_group" placeholder="optional"></div>
       </div>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1"><label>Memory limit</label><input id="f_mem" placeholder="e.g. 512M (needs cgroups v2)"></div>
+        <div style="flex:1"><label>CPU limit</label><input id="f_cpu" placeholder="e.g. 150%"></div>
+      </div>
     </div>
     <div class="foot">
       <button class="btn ghost" onclick="close_('editOverlay')">Cancel</button>
@@ -203,7 +208,7 @@ function render(){
       ? `<button class="btn sm icon ghost" title="demote" onclick="act('/projects/${r.name}/demote')">▼</button>`
       : `<button class="btn sm icon ghost" title="promote" onclick="act('/projects/${r.name}/promote')">▲</button>`;
     return `<tr class="row">
-      <td><span class="st ${r.status}"><span class="dot"></span>${r.status}</span>${r.source?` <span class="badge src">${r.source}</span>`:''}</td>
+      <td><span class="st ${r.status}"><span class="dot"></span>${r.status}${r.failure?' ('+r.failure+')':''}</span>${r.source?` <span class="badge src">${r.source}</span>`:''}</td>
       <td><div class="name">${r.name}</div><div class="sub">${r.stack||''} ${r.cwd?'· '+r.cwd:''}</div></td>
       <td>${tierBadge(r.tier)}</td>
       <td class="port">${r.port||'—'}</td>
@@ -266,16 +271,29 @@ function connectSSE(){
 function setDaemon(ok){$('#daemonDot').className='dot'+(ok?'':' off')}
 
 // --- CRUD ---
-function openEdit(){editingName=null;$('#editTitle').textContent='New project';
-  ['name','dir','cmd','port','host','group'].forEach(k=>$('#f_'+k).value='');$('#f_tier').value='ephemeral';show('editOverlay')}
-function editProject(name){const r=rows.find(x=>x.name===name);editingName=name;$('#editTitle').textContent='Edit '+name;
-  $('#f_name').value=name;$('#f_dir').value=r.cwd||'';$('#f_cmd').value=r.cmd||'';$('#f_port').value=r.port||'';
-  $('#f_host').value='';$('#f_group').value=r.group||'';$('#f_tier').value=r.tier||'ephemeral';show('editOverlay')}
+let editingProject=null; // the stored record being edited; fields the form does not show are kept
+function openEdit(){editingName=null;editingProject=null;$('#editTitle').textContent='New project';
+  ['name','dir','cmd','port','host','group','mem','cpu'].forEach(k=>$('#f_'+k).value='');$('#f_tier').value='ephemeral';show('editOverlay')}
+async function editProject(name){const r=rows.find(x=>x.name===name);editingName=name;$('#editTitle').textContent='Edit '+name;
+  // The row is only a status view; the full record (limits, port strategy, kind...) comes from /projects.
+  let stored=null;try{stored=(await api('/projects')).find(x=>x.name===name)||null}catch(e){}
+  editingProject=stored;
+  $('#f_name').value=name;$('#f_dir').value=(stored&&stored.dir)||r.cwd||'';
+  $('#f_cmd').value=stored&&stored.cmd?stored.cmd.join(' '):(r.cmd||'');$('#f_port').value=(stored&&stored.prefer_port)||r.port||'';
+  $('#f_host').value=(stored&&stored.host)||'';$('#f_group').value=r.group||'';$('#f_tier').value=r.tier||'ephemeral';
+  $('#f_mem').value=(stored&&stored.limits&&stored.limits.memory)||'';$('#f_cpu').value=(stored&&stored.limits&&stored.limits.cpu)||'';
+  show('editOverlay')}
 async function saveProject(){
-  const body={name:$('#f_name').value.trim(),dir:$('#f_dir').value.trim(),
+  const form={name:$('#f_name').value.trim(),dir:$('#f_dir').value.trim(),
     cmd:$('#f_cmd').value.trim()?$('#f_cmd').value.trim().split(/\s+/):[],
     prefer_port:parseInt($('#f_port').value)||0,host:$('#f_host').value.trim(),
-    tier:$('#f_tier').value,group:$('#f_group').value.trim(),kind:'native'};
+    tier:$('#f_tier').value,group:$('#f_group').value.trim(),
+    limits:{memory:$('#f_mem').value.trim(),cpu:$('#f_cpu').value.trim()},
+    draft:false};
+  // draft:false confirms the project, like `pm edit` does.
+  // Saving replaces the whole record, so start from the stored one and overlay the form:
+  // port_strategy, stack, auto_restart, kind... survive an edit. A new project is native.
+  const body=Object.assign({kind:'native'},editingProject||{},form);
   try{await api('/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     toast('✓ saved','ok');close_('editOverlay');refresh()}catch(e){toast('✗ '+e.message,'err')}
 }
