@@ -56,7 +56,7 @@ func contractServer(t *testing.T, wrap func(http.Handler) http.Handler) (*httpte
 	svc := api.New(paths, store, nil)
 	svc.Run.Snap = func() ([]detector.Instance, error) { return nil, nil }
 	svc.PortFree = func(int) bool { return true }
-	var h http.Handler = daemon.New(svc, 0).Handler()
+	h := daemon.New(svc, 0).Handler()
 	if wrap != nil {
 		h = wrap(h)
 	}

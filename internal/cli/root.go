@@ -118,11 +118,6 @@ func printCLIError(cmd *cobra.Command, err error) {
 	}
 }
 
-func die(err error) {
-	fmt.Fprintln(os.Stderr, styleFail.Render(glyphFail)+" "+err.Error())
-	os.Exit(1)
-}
-
 func projectFromFlags(cmd *cobra.Command) registry.Project {
 	name, _ := cmd.Flags().GetString("name")
 	dir, _ := cmd.Flags().GetString("dir")

@@ -1,0 +1,42 @@
+version: 2
+
+project_name: pm
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pm
+    main: ./cmd/pm
+    binary: pm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/antoniojosev/pm/internal/version.Version={{ .Version }}
+
+archives:
+  - id: pm
+    formats: [tar.gz]
+    name_template: "pm_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^merge:"
