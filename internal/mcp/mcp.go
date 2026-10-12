@@ -55,6 +55,12 @@ func register(s *server.MCPServer, svc *api.Service) {
 				"cpu":    map[string]any{"type": "string", "description": "CPUQuota as a percentage of one CPU, e.g. 150%"},
 			}),
 			mcp.Description("memory and CPU caps (needs cgroups v2)")),
+		mcp.WithObject("compose",
+			mcp.Properties(map[string]any{
+				"project": map[string]any{"type": "string", "description": "compose project name: lowercase letters, digits, '_' and '-'"},
+				"file":    map[string]any{"type": "string", "description": "compose file, absolute or relative to dir (optional)"},
+			}),
+			mcp.Description("name the docker compose stack: pm sets COMPOSE_PROJECT_NAME and, for `docker compose ...` in cmd, adds -p and -f, so two runs of one compose file do not collide. Limits do not apply")),
 		mcp.WithString("log", mcp.Description("absolute path of the log file (default ~/.pm/logs/<name>.log)")),
 		mcp.WithString("owner", mcp.Description("who the process is for, e.g. a worktree or script name (default \"local\")")),
 		mcp.WithArray("ports", mcp.WithNumberItems(), mcp.Description("ports the process will use, e.g. from a lease; checked free and kept from other leases. pm does not pass them to the process: put them in env or cmd"))),

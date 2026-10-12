@@ -147,3 +147,60 @@ func TestSimultaneousRunRequestsNeverShareAPort(t *testing.T) {
 		t.Fatalf("%d requests got port 4100, want 1: %v", n, codes)
 	}
 }
+
+// POST /run takes `compose`, and /ps reports the run as a docker entry; the
+// project it names is also accepted, and kept, on POST /projects.
+func TestRunWithComposeOverHTTP(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	d.svc.PortFree = func(int) bool { return true }
+	sd := testfake.Install(t)
+
+	body := strings.Replace(runBody(t, `,"compose":{"file":"compose.yml","project":"shop-qa"}`),
+		`["sleep","100"]`, `["docker","compose","up"]`, 1)
+	code, _, raw := do(t, srv, "POST", "/api/v1/run", body)
+	if code != 200 {
+		t.Fatalf("POST /run = %d %s", code, raw)
+	}
+	assertConforms(t, "POST", "/run", raw)
+	args := sd.Calls("systemd-run")[0]
+	if !slices.Contains(args, "--setenv=COMPOSE_PROJECT_NAME=shop-qa") || !slices.Contains(args, "-p") {
+		t.Fatalf("systemd-run args = %v", args)
+	}
+	if got := args[slices.Index(args, "--")+1:]; !slices.Equal(got, []string{"docker", "compose", "-f", "compose.yml", "-p", "shop-qa", "up"}) {
+		t.Fatalf("command = %v", got)
+	}
+	_, _, raw = do(t, srv, "GET", "/api/v1/ps", "")
+	if !strings.Contains(raw, `"kind":"docker"`) {
+		t.Fatalf("ps = %s", raw)
+	}
+
+	// refused: bad project name, with a 400 and nothing started
+	bad := strings.Replace(runBody(t, `,"compose":{"project":"No Good"}`), `"x"`, `"y"`, 1)
+	if code, obj, raw := do(t, srv, "POST", "/api/v1/run", bad); code != 400 || !strings.Contains(raw, "invalid compose project") {
+		t.Fatalf("bad compose = %d %v", code, obj)
+	}
+	// a typo in the field is an error, as for the other fields
+	typo := strings.Replace(runBody(t, `,"compse":{"project":"p"}`), `"x"`, `"z"`, 1)
+	if code, _, _ := do(t, srv, "POST", "/api/v1/run", typo); code != 400 {
+		t.Fatalf("misspelt compose = %d", code)
+	}
+}
+
+func TestProjectWithComposeOverHTTP(t *testing.T) {
+	_, srv := newTestDaemon(t)
+	code, _, raw := do(t, srv, "POST", "/api/v1/projects",
+		`{"name":"shop","dir":"/srv/shop","cmd":["docker","compose","up"],"compose":{"project":"shop-wt2","file":"c.yml"}}`)
+	if code != 200 {
+		t.Fatalf("POST /projects = %d %s", code, raw)
+	}
+	assertConforms(t, "POST", "/projects", raw)
+	_, _, raw = do(t, srv, "GET", "/api/v1/projects", "")
+	assertConforms(t, "GET", "/projects", raw)
+	if !strings.Contains(raw, `"kind":"docker"`) || !strings.Contains(raw, `"project":"shop-wt2"`) {
+		t.Fatalf("projects = %s", raw)
+	}
+	if code, _, raw := do(t, srv, "POST", "/api/v1/projects",
+		`{"name":"web","kind":"native","compose":{"project":"web"}}`); code != 400 || !strings.Contains(raw, "kind docker") {
+		t.Fatalf("compose on a native project = %d %s", code, raw)
+	}
+}

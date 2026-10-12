@@ -341,7 +341,7 @@ func maxi(a, b int) int {
 }
 
 func runCmd() *cobra.Command {
-	var name, owner, logFile string
+	var name, owner, logFile, composeProject, composeFile string
 	var port int
 	var ports []int
 	var env []string
@@ -356,7 +356,11 @@ stack and its port, and remembers the command and --mem/--cpu.
 With --name, starts <cmd> as that name in the cwd and registers nothing. It
 runs under systemd as pm-<name>.service, shows in 'pm ps' with its owner and
 ports while it lives, and 'pm stop <name>' stops it and forgets it. Give the
-ports it will use (from 'pm lease') with --ports; pm checks they are free and
+--compose-project (and --compose-file) give a docker compose stack a name of its
+own: pm sets COMPOSE_PROJECT_NAME and, for 'docker compose ...', adds -p and -f,
+so two runs of one compose file (two worktrees) do not share containers or
+volumes, and each run's containers show under its own name in 'pm ps'.
+Give the ports it will use (from 'pm lease') with --ports; pm checks they are free and
 keeps them from other leases, but does not pass them to the process: put them
 in --env or in the command, the way your stack wants.
 
@@ -364,6 +368,7 @@ Examples:
   pm run -- npm run dev
   pm run --name api-qa --mem 512M -- npm run dev
   pm run --name api-qa --owner wt-qa --ports 4100 -e PORT=4100 -- ./serve
+  pm run --name shop-qa --compose-project shop-qa -- docker compose up
   pm stop api-qa`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := svc()
@@ -372,7 +377,7 @@ Examples:
 			}
 			dir, _ := os.Getwd()
 			if name == "" {
-				for _, f := range []string{"owner", "env", "log", "ports", "json"} {
+				for _, f := range []string{"owner", "env", "log", "ports", "json", "compose-project", "compose-file"} {
 					if cmd.Flags().Changed(f) {
 						return fmt.Errorf("--%s needs --name: it applies to a process started by name, not to the cwd project", f)
 					}
@@ -398,7 +403,7 @@ Examples:
 			}
 			res, err := s.StartRun(runner.RunSpec{
 				Name: name, Dir: dir, Cmd: args, Env: envMap, Limits: limits,
-				Log: logFile, Owner: owner, Ports: ports,
+				Log: logFile, Owner: owner, Ports: ports, Compose: composeFromFlags(cmd),
 			})
 			if err != nil {
 				return err
@@ -417,6 +422,8 @@ Examples:
 	c.Flags().StringVar(&owner, "owner", "", "who the process is for, e.g. a worktree or script name (with --name; default "+registry.DefaultOwner+")")
 	c.Flags().StringArrayVarP(&env, "env", "e", nil, "KEY=VALUE environment variable, repeatable (with --name; never stored)")
 	c.Flags().StringVar(&logFile, "log", "", "absolute path of the log file (with --name; default ~/.pm/logs/<name>.log)")
+	c.Flags().StringVar(&composeProject, "compose-project", "", "compose project name for the stack: pm sets COMPOSE_PROJECT_NAME and adds -p to `docker compose` (with --name)")
+	c.Flags().StringVar(&composeFile, "compose-file", "", "compose file, absolute or relative to the cwd; needs --compose-project (with --name)")
 	c.Flags().IntSliceVar(&ports, "ports", nil, "ports the process will use, e.g. from pm lease (with --name)")
 	c.Flags().BoolVar(&asJSON, "json", false, "print the result as JSON (with --name)")
 	limitFlags(c, &limits, "remembered with the project; with --name, for this process only")

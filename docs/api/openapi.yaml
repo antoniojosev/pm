@@ -617,6 +617,18 @@ components:
           additionalProperties: {type: string}
           description: 'Environment variables to add. Names are letters, digits and `_`; `PM_PROJECT` is reserved. Never stored by pm.'
         limits: {$ref: "#/components/schemas/Limits"}
+        compose:
+          allOf: [{$ref: "#/components/schemas/Compose"}]
+          description: |
+            Gives the process a docker compose project of its own. pm sets
+            `COMPOSE_PROJECT_NAME` and, when `cmd` is `docker compose ...` (or
+            `docker-compose ...`), inserts `-f <file>` and `-p <project>` after
+            it, so two runs of the same compose file with different names, say
+            two worktrees of one repo, do not share containers, networks or
+            volumes. The run is then a `docker` entry (`kind` in `Project`),
+            so `limits` are rejected with it, and `env` may not set
+            `COMPOSE_PROJECT_NAME`. Its containers are attributed to the run
+            by their `com.docker.compose.project` label.
         log:
           type: string
           description: Absolute path of the file stdout and stderr are appended to. Defaults to `~/.pm/logs/<name>.log`.
@@ -694,6 +706,27 @@ components:
           type: string
           example: 150%
           description: 'Percentage of one CPU, so `150%` is a core and a half. Above zero, two decimals at most.'
+    Compose:
+      type: object
+      description: |
+        A docker compose stack with a name of its own. pm starts it with
+        `-p <project>` (when the command is `docker compose ...`) and
+        `COMPOSE_PROJECT_NAME`, and attributes the containers carrying the
+        `com.docker.compose.project=<project>` label to the project or run
+        that declared it, which is how `GET /ps` shows them under that name
+        even when the compose project is called something else. Only valid on
+        a `docker` project: anything else is rejected with 400 (`POST /projects`
+        with a `compose` and no `kind` stores `docker`).
+      required: [project]
+      properties:
+        project:
+          type: string
+          example: shop-qa
+          description: 'Lowercase letters, digits, `_` and `-`, starting with a letter or digit, at most 64 characters.'
+        file:
+          type: string
+          example: docker-compose.yml
+          description: Compose file, absolute or relative to the project's directory. Omitted lets compose look for its default file.
     ProjectInput:
       type: object
       description: |
@@ -717,6 +750,7 @@ components:
         auto_restart: {type: boolean}
         group: {type: string}
         limits: {$ref: "#/components/schemas/Limits"}
+        compose: {$ref: "#/components/schemas/Compose"}
         draft:
           type: boolean
           description: Produced by scan and not yet confirmed.
@@ -744,6 +778,7 @@ components:
         auto_restart: {type: boolean}
         group: {type: string}
         limits: {$ref: "#/components/schemas/Limits"}
+        compose: {$ref: "#/components/schemas/Compose"}
         draft: {type: boolean}
     RunInfo:
       type: object
@@ -782,6 +817,7 @@ components:
         auto_restart: {type: boolean}
         group: {type: string}
         limits: {$ref: "#/components/schemas/Limits"}
+        compose: {$ref: "#/components/schemas/Compose"}
         draft:
           type: boolean
           description: Produced by scan and not yet confirmed.

@@ -35,6 +35,9 @@ type Instance struct {
 	Source    Source `json:"source"`
 	Docker    bool   `json:"docker"`
 	Container string `json:"container,omitempty"` // docker container id/name, if Docker
+	// Compose is the com.docker.compose.project label of a container that
+	// belongs to a compose stack, whatever pm project it was attributed to.
+	Compose string `json:"compose,omitempty"`
 }
 
 var (
@@ -50,6 +53,12 @@ type Detector struct {
 	// Roots to match external native processes by cwd -> project.
 	// Populated by the caller from the registry (dir -> name).
 	DirToName func(cwd string) (name, unit string, ok bool)
+	// ComposeToName maps a compose project name (the com.docker.compose.project
+	// label of a container) to the pm project that declared it, so a stack
+	// started under a compose name of its own is attributed to that project.
+	// Without it, or when it finds nothing, the container is attributed to the
+	// compose project name itself.
+	ComposeToName func(composeProject string) (name string, ok bool)
 }
 
 // Snapshot returns every LISTEN socket enriched with attribution.

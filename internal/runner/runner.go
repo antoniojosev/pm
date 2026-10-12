@@ -44,6 +44,12 @@ func New(paths config.Paths, store *registry.Store) *Runner {
 			}
 			return "", "", false
 		},
+		ComposeToName: func(project string) (string, bool) {
+			if p, ok := store.FindByCompose(project); ok {
+				return p.Name, true
+			}
+			return "", false
+		},
 	}
 	return &Runner{Paths: paths, Store: store, Det: det, PortWait: 8 * time.Second}
 }
@@ -117,6 +123,8 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	res.Port, res.Note = port, note
 
 	cmd, env := applyPort(p, port)
+	cmd, composeEnv := applyCompose(cmd, p.Compose)
+	env = append(env, composeEnv...)
 
 	if p.Tier == registry.TierService {
 		if err := r.writeUnit(p, cmd, env); err != nil {

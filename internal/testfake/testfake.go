@@ -7,6 +7,7 @@
 package testfake
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 // Systemd is the installed pair of fakes.
 type Systemd struct {
 	state string
+	bin   string
 }
 
 // MainPID is the pid every fake unit reports.
@@ -41,6 +43,16 @@ if ! ( set -C; echo __PID__ > "$state/$unit.pid" ) 2>/dev/null; then
   exit 1
 fi
 echo "Running as unit: $unit."
+`
+
+const dockerScript = `#!/bin/sh
+state="$PM_FAKE_STATE"
+{ echo "docker"; for a in "$@"; do echo "$a"; done; echo "--end--"; } >> "$state/calls"
+case "$1" in
+  ps) [ -e "$state/docker-ps" ] && cat "$state/docker-ps" ;;
+  version) echo 27.0.0 ;;
+esac
+exit 0
 `
 
 const systemctlScript = `#!/bin/sh
@@ -119,11 +131,49 @@ func Install(t *testing.T) *Systemd {
 	}
 	t.Setenv("PM_FAKE_STATE", state)
 	t.Setenv("PATH", bin)
-	return &Systemd{state: state}
+	return &Systemd{state: state, bin: bin}
 }
 
-// Calls returns the argv of every recorded call to name ("systemd-run" or
-// "systemctl"; for systemctl the verb is the first element).
+// Container is one container the fake docker lists in `docker ps`.
+type Container struct {
+	// ID and Names identify the container; Names is also what pm shows of it.
+	ID, Names string
+	// Ports is docker's Ports column, e.g. "0.0.0.0:18000->8000/tcp".
+	Ports string
+	// ComposeProject is the com.docker.compose.project label; empty for a
+	// container that is not part of a compose stack.
+	ComposeProject string
+}
+
+// DockerPS installs a fake docker on PATH whose `docker ps --format json` lists
+// containers, one JSON object per line like the real one, and replaces the list
+// of an earlier call. Until it is called there is no docker on PATH at all.
+// Every docker call is recorded: Calls("docker").
+func (s *Systemd) DockerPS(t *testing.T, containers ...Container) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.bin, "docker"), []byte(dockerScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, c := range containers {
+		labels := ""
+		if c.ComposeProject != "" {
+			labels = "com.docker.compose.project=" + c.ComposeProject
+		}
+		row, err := json.Marshal(map[string]string{"ID": c.ID, "Names": c.Names, "Ports": c.Ports, "Labels": labels})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(row)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(s.state, "docker-ps"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Calls returns the argv of every recorded call to name ("systemd-run",
+// "systemctl" or "docker"; for systemctl the verb is the first element).
 func (s *Systemd) Calls(name string) [][]string {
 	raw, err := os.ReadFile(filepath.Join(s.state, "calls"))
 	if err != nil {

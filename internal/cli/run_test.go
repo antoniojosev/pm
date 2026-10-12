@@ -122,6 +122,76 @@ func TestRunByNameWithAllTheOptions(t *testing.T) {
 	}
 }
 
+func TestRunByNameWithComposeNamesTheStack(t *testing.T) {
+	_, sd := isolateWithSystemd(t)
+	for _, name := range []string{"shop-a", "shop-b"} {
+		if _, _, err := run(t, "run", "--name", name, "--compose-project", name+"-stack", "--compose-file", "compose.yml",
+			"--", "docker", "compose", "up"); err != nil {
+			t.Fatalf("pm run %s: %v", name, err)
+		}
+	}
+	calls := sd.Calls("systemd-run")
+	if len(calls) != 2 {
+		t.Fatalf("systemd-run calls = %v", calls)
+	}
+	for i, name := range []string{"shop-a", "shop-b"} {
+		args := calls[i]
+		want := "docker compose -f compose.yml -p " + name + "-stack up"
+		if got := strings.Join(args[len(args)-7:], " "); got != want {
+			t.Errorf("%s command = %q, want %q", name, got, want)
+		}
+		if !contains(args, "--setenv=COMPOSE_PROJECT_NAME="+name+"-stack") {
+			t.Errorf("%s lacks the project variable: %v", name, args)
+		}
+	}
+	if !sd.Active("pm-shop-a.service") || !sd.Active("pm-shop-b.service") {
+		t.Fatal("both runs must be alive")
+	}
+}
+
+func TestComposeFlagsNeedNameOrAreValidated(t *testing.T) {
+	_, sd := isolateWithSystemd(t)
+	if _, _, err := run(t, "run", "--compose-project", "p", "--", "true"); err == nil || !strings.Contains(err.Error(), "--compose-project needs --name") {
+		t.Fatalf("without --name: %v", err)
+	}
+	if _, _, err := run(t, "run", "--name", "x", "--compose-file", "c.yml", "--", "true"); err == nil || !strings.Contains(err.Error(), "compose.project is required") {
+		t.Fatalf("file without project: %v", err)
+	}
+	if _, _, err := run(t, "run", "--name", "x", "--compose-project", "Bad Name", "--", "true"); err == nil || !strings.Contains(err.Error(), "invalid compose project") {
+		t.Fatalf("bad project: %v", err)
+	}
+	if len(sd.Calls("systemd-run")) != 0 {
+		t.Fatal("systemd-run ran for a refused call")
+	}
+}
+
+func TestAddAndEditKeepTheComposeStack(t *testing.T) {
+	isolateWithSystemd(t)
+	if _, _, err := run(t, "add", "--name", "shop", "--cmd", "docker compose up", "--compose-project", "shop-wt2", "--compose-file", "c.yml"); err != nil {
+		t.Fatalf("pm add: %v", err)
+	}
+	reg, _ := os.ReadFile(filepath.Join(os.Getenv("PM_HOME"), "registry.json"))
+	for _, want := range []string{`"kind": "docker"`, `"project": "shop-wt2"`, `"file": "c.yml"`} {
+		if !strings.Contains(string(reg), want) {
+			t.Errorf("registry lacks %s:\n%s", want, reg)
+		}
+	}
+	if _, _, err := run(t, "edit", "shop", "--compose-project", "shop-wt3"); err != nil {
+		t.Fatalf("pm edit: %v", err)
+	}
+	reg, _ = os.ReadFile(filepath.Join(os.Getenv("PM_HOME"), "registry.json"))
+	if !strings.Contains(string(reg), `"project": "shop-wt3"`) || !strings.Contains(string(reg), `"file": "c.yml"`) {
+		t.Errorf("edit did not change the project and keep the file:\n%s", reg)
+	}
+	if _, _, err := run(t, "edit", "shop", "--compose-project", "", "--compose-file", ""); err != nil {
+		t.Fatalf("clearing the stack: %v", err)
+	}
+	reg, _ = os.ReadFile(filepath.Join(os.Getenv("PM_HOME"), "registry.json"))
+	if strings.Contains(string(reg), `"compose": {`) {
+		t.Errorf("the stack was not cleared:\n%s", reg)
+	}
+}
+
 func TestRunByNameErrors(t *testing.T) {
 	_, sd := isolateWithSystemd(t)
 	tests := []struct {
