@@ -490,11 +490,11 @@ components:
         memory:
           type: string
           example: 512M
-          description: 'Bytes with an optional K, M, G or T suffix (base 1024), a percentage of physical memory, or `infinity`. Not zero.'
+          description: 'Bytes with an optional K, M, G or T suffix (base 1024), a percentage of physical memory (up to 100%, two decimals at most), or `infinity`. Not zero.'
         cpu:
           type: string
           example: 150%
-          description: 'Percentage of one CPU, so `150%` is a core and a half. Above zero.'
+          description: 'Percentage of one CPU, so `150%` is a core and a half. Above zero, two decimals at most.'
     ProjectInput:
       type: object
       description: |

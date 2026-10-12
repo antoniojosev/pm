@@ -288,7 +288,9 @@ async function saveProject(){
     cmd:$('#f_cmd').value.trim()?$('#f_cmd').value.trim().split(/\s+/):[],
     prefer_port:parseInt($('#f_port').value)||0,host:$('#f_host').value.trim(),
     tier:$('#f_tier').value,group:$('#f_group').value.trim(),
-    limits:{memory:$('#f_mem').value.trim(),cpu:$('#f_cpu').value.trim()}};
+    limits:{memory:$('#f_mem').value.trim(),cpu:$('#f_cpu').value.trim()},
+    draft:false};
+  // draft:false confirms the project, like `pm edit` does.
   // Saving replaces the whole record, so start from the stored one and overlay the form:
   // port_strategy, stack, auto_restart, kind... survive an edit. A new project is native.
   const body=Object.assign({kind:'native'},editingProject||{},form);

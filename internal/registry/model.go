@@ -4,6 +4,8 @@ package registry
 import (
 	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // Tier describes how a project is expected to run.
@@ -52,8 +54,10 @@ type Limits struct {
 }
 
 var (
-	memoryRe = regexp.MustCompile(`^(infinity|[0-9]+[KMGT]?|[0-9]+(\.[0-9]+)?%)$`)
-	cpuRe    = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?%$`)
+	// Percentages take at most two decimals: systemd rejects finer ones
+	// ("12.345%", "0.001%") and silently ignores the line in a unit file.
+	memoryRe = regexp.MustCompile(`^(infinity|[0-9]+[KMGT]?|[0-9]+(\.[0-9]{1,2})?%)$`)
+	cpuRe    = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?%$`)
 )
 
 // IsZero reports whether no limit is set. It lets encoding/json drop an empty
@@ -64,13 +68,24 @@ func (l Limits) IsZero() bool { return l.Memory == "" && l.CPU == "" }
 // typos: the values end up inside a unit file, so anything outside this
 // grammar (a newline, say) must never get that far.
 func (l Limits) Validate() error {
-	if l.Memory != "" && (!memoryRe.MatchString(l.Memory) || isZero(l.Memory)) {
-		return fmt.Errorf("invalid memory limit %q: use bytes with K, M, G or T (512M, 2G), a percentage (50%%) or infinity", l.Memory)
+	if l.Memory != "" && (!memoryRe.MatchString(l.Memory) || isZero(l.Memory) || memoryOver100(l.Memory)) {
+		return fmt.Errorf("invalid memory limit %q: use bytes with K, M, G or T (512M, 2G), a percentage up to 100%% (50%%) or infinity", l.Memory)
 	}
 	if l.CPU != "" && (!cpuRe.MatchString(l.CPU) || isZero(l.CPU)) {
-		return fmt.Errorf("invalid cpu limit %q: use a percentage of one CPU above zero (50%%, 150%%)", l.CPU)
+		return fmt.Errorf("invalid cpu limit %q: use a percentage of one CPU above zero, up to two decimals (50%%, 150%%)", l.CPU)
 	}
 	return nil
+}
+
+// memoryOver100 reports whether v is a percentage above 100%, which systemd
+// refuses for MemoryMax= (it is a share of physical memory).
+func memoryOver100(v string) bool {
+	num, ok := strings.CutSuffix(v, "%")
+	if !ok {
+		return false
+	}
+	f, err := strconv.ParseFloat(num, 64)
+	return err != nil || f > 100
 }
 
 // isZero reports whether a number-with-suffix value is zero ("0", "0M", "0.0%"):

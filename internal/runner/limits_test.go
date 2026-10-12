@@ -285,6 +285,10 @@ func TestStartRefusesLimitOverrideOnServiceTier(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "pm edit") {
 		t.Fatalf("err = %v", err)
 	}
+	// pm edit alone does not rewrite the unit on disk: the message must say so.
+	if !strings.Contains(err.Error(), "pm restart api") {
+		t.Fatalf("err does not point at pm restart: %v", err)
+	}
 	if _, statErr := os.Stat(r.unitPath("api")); statErr == nil {
 		t.Fatal("a unit file was written for a refused start")
 	}

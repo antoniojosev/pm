@@ -33,7 +33,9 @@ func TestDashboardFormKeepsLimitsAndStoredFields(t *testing.T) {
 	// Saving POSTs the whole record, which replaces the stored one: the form
 	// must carry the limits and start from the stored record so an edit does
 	// not drop them (or port_strategy, kind...).
-	for _, want := range []string{`id="f_mem"`, `id="f_cpu"`, "limits:{memory:", "Object.assign({kind:'native'},editingProject||{},form)"} {
+	for _, want := range []string{`id="f_mem"`, `id="f_cpu"`, "limits:{memory:", "Object.assign({kind:'native'},editingProject||{},form)",
+		// Saving from the dashboard confirms a scan draft, as pm edit does.
+		"draft:false"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("dashboard lacks %q", want)
 		}

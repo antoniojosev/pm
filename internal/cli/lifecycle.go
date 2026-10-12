@@ -376,7 +376,7 @@ func startCmd() *cobra.Command {
 	}
 	c.Flags().IntVar(&port, "port", 0, "pin the port")
 	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken")
-	limitFlags(c, &limits, "this start only, ephemeral projects; pm edit sets them for good")
+	limitFlags(c, &limits, "this start only, ephemeral projects; pm edit sets them for good, and a service-tier project then needs pm restart")
 	return c
 }
 

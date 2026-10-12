@@ -98,7 +98,7 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	if p.Tier == registry.TierService && !opts.Limits.IsZero() {
 		// A service-tier unit is a file enabled at boot: an override written
 		// into it would outlive this start and every restart after it.
-		return Result{}, fmt.Errorf("cannot start %q with --mem/--cpu: it is a service-tier project whose unit persists across restarts; set the limits with `pm edit %s --mem ... --cpu ...`", p.Name, p.Name)
+		return Result{}, fmt.Errorf("cannot start %q with --mem/--cpu: it is a service-tier project whose unit persists across restarts; set the limits with `pm edit %s --mem ... --cpu ...`, then `pm restart %s` to rewrite the unit", p.Name, p.Name, p.Name)
 	}
 	p.Limits = p.Limits.Merge(opts.Limits)
 	if err := p.Validate(); err != nil {
