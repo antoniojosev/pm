@@ -49,10 +49,12 @@ func psCmd() *cobra.Command {
 
 // renderPS prints the running-first process listing per the approved design.
 // Rows sit in a single flat list; the leading dot encodes status (green ● up,
-// gray ○ down). Unmanaged/system listeners are never shown here — they live in
-// `pm listen`.
+// red ✗ failed, gray ○ down). Failed rows are the ones systemd still holds as
+// failed, typically a project the kernel killed for passing its memory limit:
+// they show in every view because they need attention. Unmanaged/system
+// listeners are never shown here — they live in `pm listen`.
 func renderPS(w *os.File, rows []api.Row, opts psOpts) {
-	var up, down []api.Row
+	var up, down, failed []api.Row
 	unmanaged := 0
 	for _, r := range rows {
 		if opts.group != "" && !strings.EqualFold(r.Group, opts.group) {
@@ -63,6 +65,8 @@ func renderPS(w *os.File, rows []api.Row, opts psOpts) {
 			up = append(up, r)
 		case "down":
 			down = append(down, r)
+		case "failed":
+			failed = append(failed, r)
 		case "unclaimed":
 			unmanaged++
 		}
@@ -70,47 +74,57 @@ func renderPS(w *os.File, rows []api.Row, opts psOpts) {
 
 	upPrefix := "  " + styleUp.Render(glyphUp) + " "
 	downPrefix := "  " + styleDown.Render(glyphDown) + " "
+	failPrefix := "  " + styleFail.Render(glyphFail) + " "
+	// printRows lays the up, failed and down groups out (in that order, each
+	// with its own dot) under one header, columns sized over all of them.
+	printRows := func(groups ...[]api.Row) {
+		var all []api.Row
+		for _, g := range groups {
+			all = append(all, g...)
+		}
+		nameW, portW, urlW := psWidths(all)
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, colHeader(nameW, portW, urlW))
+		for i, g := range groups {
+			prefix := []string{upPrefix, failPrefix, downPrefix}[i]
+			for _, r := range g {
+				fmt.Fprintln(w, projectRow(prefix, r, nameW, portW, urlW))
+			}
+		}
+	}
+	withFailed := func(text string) string {
+		if len(failed) == 0 {
+			return text
+		}
+		return fmt.Sprintf("%s · %d failed", text, len(failed))
+	}
 
 	fmt.Fprintln(w)
 
-	// --stopped: only the stopped rows, gray dot per row.
+	// --stopped: only what is not running (failed rows first), one dot per row.
 	if opts.stopped {
-		fmt.Fprintln(w, summaryLine(fmt.Sprintf("%d stopped", len(down))))
-		if len(down) == 0 {
+		fmt.Fprintln(w, summaryLine(withFailed(fmt.Sprintf("%d stopped", len(down)))))
+		if len(down)+len(failed) == 0 {
 			fmt.Fprintln(w, "  "+styleDim.Render("nothing stopped"))
 			fmt.Fprintln(w)
 			return
 		}
-		nameW, portW, urlW := psWidths(down)
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, colHeader(nameW, portW, urlW))
-		for _, r := range down {
-			fmt.Fprintln(w, projectRow(downPrefix, r, nameW, portW, urlW))
-		}
+		printRows(nil, failed, down)
 		fmt.Fprintln(w)
 		return
 	}
 
-	// -a/--all: running + stopped in one flat list, running rows first, the dot
-	// on each row encoding its status. No section-label lines.
+	// -a/--all: running, failed and stopped in one flat list, the dot on each
+	// row encoding its status. No section-label lines.
 	if opts.all {
-		fmt.Fprintln(w, summaryLine(fmt.Sprintf("%d running · %d stopped", len(up), len(down))))
-		both := append(append([]api.Row{}, up...), down...)
-		nameW, portW, urlW := psWidths(both)
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, colHeader(nameW, portW, urlW))
-		for _, r := range up {
-			fmt.Fprintln(w, projectRow(upPrefix, r, nameW, portW, urlW))
-		}
-		for _, r := range down {
-			fmt.Fprintln(w, projectRow(downPrefix, r, nameW, portW, urlW))
-		}
+		fmt.Fprintln(w, summaryLine(withFailed(fmt.Sprintf("%d running · %d stopped", len(up), len(down)))))
+		printRows(up, failed, down)
 		fmt.Fprintln(w)
 		return
 	}
 
-	// default: running only, short.
-	if len(up) == 0 {
+	// default: running (plus anything failed), short.
+	if len(up)+len(failed) == 0 {
 		fmt.Fprintln(w, summaryLine("nothing running"))
 		var hints []string
 		if len(down) > 0 {
@@ -122,13 +136,12 @@ func renderPS(w *os.File, rows []api.Row, opts psOpts) {
 		return
 	}
 
-	fmt.Fprintln(w, summaryLine(fmt.Sprintf("%d running", len(up))))
-	nameW, portW, urlW := psWidths(up)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, colHeader(nameW, portW, urlW))
-	for _, r := range up {
-		fmt.Fprintln(w, projectRow(upPrefix, r, nameW, portW, urlW))
+	if len(up) == 0 {
+		fmt.Fprintln(w, summaryLine(withFailed("nothing running")))
+	} else {
+		fmt.Fprintln(w, summaryLine(withFailed(fmt.Sprintf("%d running", len(up)))))
 	}
+	printRows(up, failed, nil)
 
 	// footer: counts of what's hidden + how to reveal it.
 	var counts, hints []string
@@ -181,7 +194,15 @@ func projectRow(prefix string, r api.Row, nameW, portW, urlW int) string {
 	}
 	url := styleURL.Render(pad(urlToken(r), urlW))
 	tier := styleTier.Render(r.Tier)
-	return prefix + name + "  " + port + "  " + url + "  " + tier
+	line := prefix + name + "  " + port + "  " + url + "  " + tier
+	if r.Status == "failed" {
+		reason := "failed"
+		if r.Failure != "" {
+			reason += ": " + r.Failure
+		}
+		line += "  " + styleFail.Render(reason)
+	}
+	return line
 }
 
 // truncName caps a name at 26 runes, truncating to 25 + "…" when longer.
@@ -355,7 +376,7 @@ func startCmd() *cobra.Command {
 	}
 	c.Flags().IntVar(&port, "port", 0, "pin the port")
 	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken")
-	limitFlags(c, &limits, "this start only; pm edit makes it permanent")
+	limitFlags(c, &limits, "this start only, ephemeral projects; pm edit sets them for good")
 	return c
 }
 

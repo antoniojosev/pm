@@ -409,3 +409,68 @@ func TestStartPassthroughRefusesDirlessProject(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// fakeSystemctl puts a systemctl on PATH that prints out for every call, the
+// way systemd would answer `show pm-*.service`.
+func fakeSystemctl(t *testing.T, out string) {
+	t.Helper()
+	dir := t.TempDir()
+	data := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(data, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n/bin/cat '" + data + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestPSReportsAFailedUnitInsteadOfStopped(t *testing.T) {
+	svc := newTestService(t)
+	for _, name := range []string{"api", "web", "idle"} {
+		if err := svc.Add(registry.Project{Name: name, Dir: "/srv/" + name, PreferPort: 8000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// api was OOM-killed under its memory limit and systemd kept it failed;
+	// web is a healthy unit; idle has no unit at all.
+	fakeSystemctl(t, "Result=oom-kill\nId=pm-api.service\nActiveState=failed\n\n"+
+		"Result=success\nId=pm-web.service\nActiveState=active\n")
+	live(svc, detector.Instance{Project: "web", Port: 3000, Source: detector.SourceMarker})
+
+	rows, err := svc.PS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]Row{}
+	for _, r := range rows {
+		by[r.Name] = r
+	}
+	if r := by["api"]; r.Status != "failed" || r.Failure != "oom-kill" {
+		t.Fatalf("api = %+v, want failed/oom-kill", r)
+	}
+	if r := by["web"]; r.Status != "up" || r.Failure != "" {
+		t.Fatalf("web = %+v", r)
+	}
+	if r := by["idle"]; r.Status != "down" {
+		t.Fatalf("idle = %+v", r)
+	}
+	// Order: up, then failed (it needs attention), then plain stopped.
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.Name)
+	}
+	if strings.Join(order, ",") != "web,api,idle" {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+func TestPSWithoutSystemctlHasNoFailedRows(t *testing.T) {
+	svc := newTestService(t) // PATH is empty: systemctl cannot run
+	_ = svc.Add(registry.Project{Name: "api", Dir: "/srv/api"})
+	rows, err := svc.PS()
+	if err != nil || len(rows) != 1 || rows[0].Status != "down" {
+		t.Fatalf("rows = %+v, err = %v", rows, err)
+	}
+}

@@ -134,7 +134,7 @@ func (s *Store) FindByDir(dir string) (Project, bool) {
 
 // Upsert inserts or replaces a project by name and persists.
 func (s *Store) Upsert(p Project) error {
-	if err := p.Limits.Validate(); err != nil {
+	if err := p.Validate(); err != nil {
 		return err
 	}
 	s.mu.Lock()

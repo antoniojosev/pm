@@ -90,7 +90,8 @@ func TestLaunchEphemeralBumpsPortOnCollision(t *testing.T) {
 	if _, err := os.Stat(r.Paths.LogsDir); err != nil {
 		t.Fatal("launch should create the runtime dirs")
 	}
-	if f.called("systemctl") {
+	// reset-failed only clears a stale failed state; nothing persistent may change.
+	if f.called("systemctl", "daemon-reload") || f.called("systemctl", "enable") {
 		t.Fatal("ephemeral launch must not touch persistent units")
 	}
 }

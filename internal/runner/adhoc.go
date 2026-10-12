@@ -60,5 +60,9 @@ func (r *Runner) RunAdhoc(dir string, cmd []string, opts AdhocOpts) (Result, err
 	if err := r.Store.Upsert(p); err != nil {
 		return Result{}, err
 	}
-	return r.launch(p, opts.LaunchOpts)
+	// The limits are already merged into p (and stored); handing them to launch
+	// again would count as a per-start override, which service tier refuses.
+	launchOpts := opts.LaunchOpts
+	launchOpts.Limits = registry.Limits{}
+	return r.launch(p, launchOpts)
 }

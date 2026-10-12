@@ -39,8 +39,9 @@ type PortStrategy struct {
 }
 
 // Limits caps the resources of the unit pm launches. The values are handed to
-// systemd verbatim (MemoryMax= and CPUQuota=), so they need cgroups v2. A zero
-// value means "no limit".
+// systemd verbatim (MemoryMax= and CPUQuota=), so they need cgroups v2. A
+// memory cap also forbids swap (MemorySwapMax=0) so the kernel kills the
+// process instead of paging it out. A zero value means "no limit".
 type Limits struct {
 	// Memory is a MemoryMax= value: bytes with an optional K, M, G or T suffix
 	// (base 1024), a percentage of physical memory, or "infinity". E.g. "512M".
@@ -115,6 +116,19 @@ type Project struct {
 	Limits Limits `json:"limits,omitzero"`
 	// Draft marks entries produced by scan that the user has not confirmed.
 	Draft bool `json:"draft,omitempty"`
+}
+
+// Validate checks the project's own consistency: valid limits, and none on a
+// docker project, where the unit only wraps the `docker compose` client while
+// the containers live outside its cgroup, so a cap would do nothing.
+func (p Project) Validate() error {
+	if err := p.Limits.Validate(); err != nil {
+		return err
+	}
+	if p.Kind == KindDocker && !p.Limits.IsZero() {
+		return fmt.Errorf("limits are not supported on docker projects: the unit only wraps the compose client, not the containers; set mem_limit and cpus in the compose file instead")
+	}
+	return nil
 }
 
 // Hostname returns the .localhost name this project answers to. The label is

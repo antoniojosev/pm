@@ -95,8 +95,13 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	if err := r.Paths.EnsureDirs(); err != nil {
 		return Result{}, err
 	}
+	if p.Tier == registry.TierService && !opts.Limits.IsZero() {
+		// A service-tier unit is a file enabled at boot: an override written
+		// into it would outlive this start and every restart after it.
+		return Result{}, fmt.Errorf("cannot start %q with --mem/--cpu: it is a service-tier project whose unit persists across restarts; set the limits with `pm edit %s --mem ... --cpu ...`", p.Name, p.Name)
+	}
 	p.Limits = p.Limits.Merge(opts.Limits)
-	if err := p.Limits.Validate(); err != nil {
+	if err := p.Validate(); err != nil {
 		return Result{}, fmt.Errorf("cannot start %q: %w", p.Name, err)
 	}
 	res := Result{Project: p.Name, Unit: UnitName(p.Name)}
@@ -138,6 +143,10 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 
 // runTransient starts a detached transient service via systemd-run.
 func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
+	// A unit the kernel killed (an OOM kill under MemoryMax=, say) stays loaded
+	// in the failed state, and systemd-run refuses to reuse its name until that
+	// is cleared. Nothing to clear is the normal case, so the error is ignored.
+	_ = systemctl("reset-failed", UnitName(p.Name))
 	log := r.Paths.LogFile(p.Name)
 	args := []string{
 		"--user",
@@ -243,7 +252,11 @@ func (r *Runner) RestartInstance(port int) (Result, error) {
 		if name == "" {
 			name = filepath.Base(cwd)
 		}
-		if err := r.runTransient(registry.Project{Name: name, Dir: cwd}, argv, nil); err != nil {
+		relaunch := registry.Project{Name: name, Dir: cwd}
+		if sp, ok := r.Store.Get(name); ok {
+			relaunch.Limits = sp.Limits // a registered project keeps its caps
+		}
+		if err := r.runTransient(relaunch, argv, nil); err != nil {
 			return Result{}, err
 		}
 		return Result{Project: name, Port: port, Note: "relaunched"}, nil
@@ -333,6 +346,31 @@ func (r *Runner) Down(group string) error {
 func (r *Runner) IsActive(name string) bool {
 	out, _ := execCommand("systemctl", "--user", "is-active", UnitName(name)).Output()
 	return strings.TrimSpace(string(out)) == "active"
+}
+
+// FailedUnits returns, for every pm unit systemd still holds in the failed
+// state, the reason it gave (the unit's Result: "oom-kill", "exit-code",
+// "signal", ...), keyed by unit name. One systemctl call covers every project.
+// Stopping a project clears its entry.
+func (r *Runner) FailedUnits() map[string]string {
+	out, err := execCommand("systemctl", "--user", "show", config.UnitPrefix+"*.service",
+		"-p", "Id", "-p", "ActiveState", "-p", "Result").Output()
+	if err != nil {
+		return nil
+	}
+	failed := map[string]string{}
+	for _, block := range strings.Split(string(out), "\n\n") {
+		props := map[string]string{}
+		for _, line := range strings.Split(block, "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				props[k] = v
+			}
+		}
+		if props["ActiveState"] == "failed" && props["Id"] != "" {
+			failed[props["Id"]] = props["Result"]
+		}
+	}
+	return failed
 }
 
 // --- port helpers --------------------------------------------------------
@@ -433,10 +471,18 @@ func (r *Runner) writeUnit(p registry.Project, cmd, env []string) error {
 // limitProps turns limits into systemd properties. The same strings feed
 // `systemd-run -p` for transient units and the [Service] section of a
 // persistent one. Callers validate the limits first.
+//
+// A memory cap also pins MemorySwapMax=0: MemoryMax= alone only makes the
+// kernel reclaim into swap, so on a host with swap (WSL2 has some) the process
+// keeps running over its limit and is never OOM-killed. "infinity" means no
+// cap, so it gets no swap restriction either.
 func limitProps(l registry.Limits) []string {
 	var props []string
 	if l.Memory != "" {
 		props = append(props, "MemoryMax="+l.Memory)
+		if l.Memory != "infinity" {
+			props = append(props, "MemorySwapMax=0")
+		}
 	}
 	if l.CPU != "" {
 		props = append(props, "CPUQuota="+l.CPU)

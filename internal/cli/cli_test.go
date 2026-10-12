@@ -114,6 +114,11 @@ func TestRenderPS(t *testing.T) {
 		{Name: "api", Status: "down", Port: 8000, URL: "http://api.localhost", Tier: "service"},
 		{Name: "?", Status: "unclaimed", Port: 53},
 	}
+	failedRows := []api.Row{
+		rows[0],
+		{Name: "job", Status: "failed", Failure: "oom-kill", URL: "http://job.localhost", Tier: "ephemeral"},
+		rows[1],
+	}
 	render := func(rows []api.Row, opts psOpts) string {
 		out, _ := capture(t, func() { renderPS(os.Stdout, rows, opts) })
 		return out
@@ -139,6 +144,15 @@ func TestRenderPS(t *testing.T) {
 			[]string{"nothing running", "pm ps -a to see the 1 registered", "pm run -- <cmd>"}, nil},
 		{"nothing stopped", rows[:1], psOpts{stopped: true},
 			[]string{"nothing stopped"}, nil},
+		{"failed shows in the default view with its reason", failedRows, psOpts{},
+			[]string{"1 running · 1 failed", "web", "job", "failed: oom-kill", "1 stopped"},
+			[]string{"api.localhost"}},
+		{"failed alone is not nothing running", failedRows[1:2], psOpts{},
+			[]string{"nothing running · 1 failed", "job", "failed: oom-kill"}, nil},
+		{"all lists failed between running and stopped", failedRows, psOpts{all: true},
+			[]string{"1 running · 1 stopped · 1 failed", "job", "failed: oom-kill", "api"}, nil},
+		{"stopped view includes failed", failedRows, psOpts{stopped: true},
+			[]string{"1 stopped · 1 failed", "job", "api"}, []string{"web.localhost"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -463,15 +477,21 @@ func TestAddAndEditLimits(t *testing.T) {
 }
 
 func TestCgroupCheck(t *testing.T) {
-	present := filepath.Join(t.TempDir(), "cgroup.controllers")
-	if err := os.WriteFile(present, []byte("cpu memory pids"), 0o644); err != nil {
-		t.Fatal(err)
+	write := func(content string) string {
+		f := filepath.Join(t.TempDir(), "cgroup.controllers")
+		if err := os.WriteFile(f, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return f
 	}
-	if detail, ok := cgroupCheck(present); !ok || detail != "unified" {
-		t.Fatalf("v2 present: %q, %v", detail, ok)
+	missing := filepath.Join(t.TempDir(), "missing")
+	root := write("cpuset cpu io memory pids")
+
+	if detail, ok := cgroupCheck(root, write("cpu memory pids")); !ok || detail != "unified" {
+		t.Fatalf("v2 with both controllers delegated: %q, %v", detail, ok)
 	}
 
-	detail, ok := cgroupCheck(filepath.Join(t.TempDir(), "missing"))
+	detail, ok := cgroupCheck(missing, write("cpu memory"))
 	if ok {
 		t.Fatal("a missing cgroup v2 must fail the check")
 	}
@@ -479,5 +499,26 @@ func TestCgroupCheck(t *testing.T) {
 		if !strings.Contains(detail, want) {
 			t.Errorf("warning %q lacks %q", detail, want)
 		}
+	}
+
+	// v2 is mounted but the user manager was not delegated the controllers:
+	// systemd would accept MemoryMax=/CPUQuota= and silently ignore them.
+	for _, tc := range []struct {
+		user string
+		want string
+	}{
+		{"pids", "memory and cpu not delegated"},
+		{"cpu pids", "memory not delegated"},
+		{"memory pids", "cpu not delegated"},
+	} {
+		detail, ok := cgroupCheck(root, write(tc.user))
+		if ok || !strings.Contains(detail, tc.want) || !strings.Contains(detail, "not be enforced") {
+			t.Errorf("user controllers %q: %q, %v; want failure mentioning %q", tc.user, detail, ok, tc.want)
+		}
+	}
+
+	// An unreadable user cgroup cannot be verified: warn rather than pass.
+	if detail, ok := cgroupCheck(root, missing); ok || !strings.Contains(detail, "may not be enforced") {
+		t.Errorf("unreadable user controllers: %q, %v", detail, ok)
 	}
 }

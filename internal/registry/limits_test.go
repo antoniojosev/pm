@@ -99,3 +99,25 @@ func TestUpsertRejectsInvalidLimits(t *testing.T) {
 		t.Fatalf("stored limits = %+v", got.Limits)
 	}
 }
+
+func TestUpsertRejectsLimitsOnDockerProjects(t *testing.T) {
+	// The unit of a docker project wraps `docker compose`; the containers live
+	// outside its cgroup, so a cap there would silently do nothing.
+	s, err := Open(tempPaths(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.Upsert(Project{Name: "db", Kind: KindDocker, Limits: Limits{Memory: "1G"}})
+	if err == nil || !strings.Contains(err.Error(), "docker") || !strings.Contains(err.Error(), "compose") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := s.Get("db"); ok {
+		t.Fatal("a rejected project was stored")
+	}
+	if err := s.Upsert(Project{Name: "db", Kind: KindDocker}); err != nil {
+		t.Fatalf("a docker project without limits must be accepted: %v", err)
+	}
+	if err := s.Upsert(Project{Name: "api", Kind: KindNative, Limits: Limits{CPU: "50%"}}); err != nil {
+		t.Fatalf("native with limits: %v", err)
+	}
+}

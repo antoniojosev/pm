@@ -477,10 +477,15 @@ components:
       type: object
       description: |
         Resource caps for the unit pm launches, handed to systemd as
-        `MemoryMax=` and `CPUQuota=`. They need cgroups v2 (`pm doctor` warns
-        when it is missing); a process that exceeds `memory` is killed by the
-        kernel and its unit ends `failed`. Omitted or empty means no limit.
-        Values outside the documented grammar are rejected with 400.
+        `MemoryMax=` and `CPUQuota=`. A `memory` cap other than `infinity` also
+        sets `MemorySwapMax=0`, so a process that exceeds it is killed by the
+        kernel (OOM) instead of being paged out, and its unit ends `failed`
+        (the project then reports status `failed`, failure `oom-kill`, in
+        `Row`). They need cgroups v2 with the memory and cpu controllers
+        delegated to the user manager (`pm doctor` warns when either is
+        missing). Omitted or empty means no limit. Values outside the
+        documented grammar, and any limit on a `docker` project (the unit only
+        wraps the compose client, not the containers), are rejected with 400.
       properties:
         memory:
           type: string
@@ -587,7 +592,18 @@ components:
         url: {type: string, description: "http://<host>.localhost (via proxy)."}
         local_url: {type: string, description: "http://localhost:<port>."}
         tier: {type: string}
-        status: {type: string, enum: [up, down, unclaimed]}
+        status:
+          type: string
+          enum: [up, down, failed, unclaimed]
+          description: |
+            `failed` means systemd still holds the project's unit in the failed
+            state, for instance because the kernel killed it for passing its
+            memory limit; `failure` says why. Starting or stopping the project
+            clears it.
+        failure:
+          type: string
+          example: oom-kill
+          description: 'Present when status is `failed`: the unit''s result as systemd reports it (`oom-kill`, `exit-code`, `signal`...).'
         kind: {type: string}
         stack: {type: string}
         source: {type: string}
