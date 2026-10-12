@@ -473,6 +473,23 @@ components:
         flag: {type: string, example: "--port"}
         env: {type: string, example: PORT}
         template: {type: string, example: "runserver 0.0.0.0:{port}"}
+    Limits:
+      type: object
+      description: |
+        Resource caps for the unit pm launches, handed to systemd as
+        `MemoryMax=` and `CPUQuota=`. They need cgroups v2 (`pm doctor` warns
+        when it is missing); a process that exceeds `memory` is killed by the
+        kernel and its unit ends `failed`. Omitted or empty means no limit.
+        Values outside the documented grammar are rejected with 400.
+      properties:
+        memory:
+          type: string
+          example: 512M
+          description: 'Bytes with an optional K, M, G or T suffix (base 1024), a percentage of physical memory, or `infinity`. Not zero.'
+        cpu:
+          type: string
+          example: 150%
+          description: 'Percentage of one CPU, so `150%` is a core and a half. Above zero.'
     ProjectInput:
       type: object
       description: |
@@ -495,6 +512,7 @@ components:
         stack: {type: string}
         auto_restart: {type: boolean}
         group: {type: string}
+        limits: {$ref: "#/components/schemas/Limits"}
         draft:
           type: boolean
           description: Produced by scan and not yet confirmed.
@@ -521,6 +539,7 @@ components:
         stack: {type: string}
         auto_restart: {type: boolean}
         group: {type: string}
+        limits: {$ref: "#/components/schemas/Limits"}
         draft: {type: boolean}
     Project:
       type: object
@@ -541,6 +560,7 @@ components:
         stack: {type: string}
         auto_restart: {type: boolean}
         group: {type: string}
+        limits: {$ref: "#/components/schemas/Limits"}
         draft:
           type: boolean
           description: Produced by scan and not yet confirmed.

@@ -379,3 +379,105 @@ func TestEditScanAndLogsCommands(t *testing.T) {
 		t.Fatalf("logs: %v\n%s", err, out)
 	}
 }
+
+func TestLimitFlagsExist(t *testing.T) {
+	for name, c := range map[string]*cobra.Command{
+		"add": addCmd(), "edit": editCmd(), "start": startCmd(), "run": runCmd(),
+	} {
+		for _, f := range []string{"mem", "cpu"} {
+			if c.Flags().Lookup(f) == nil {
+				t.Errorf("pm %s has no --%s flag", name, f)
+			}
+		}
+	}
+}
+
+func TestProjectFromFlagsReadsLimits(t *testing.T) {
+	c := &cobra.Command{Use: "x"}
+	addProjectFlags(c)
+	if err := c.ParseFlags([]string{"--name", "web", "--mem", "256M", "--cpu", "150%"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectFromFlags(c).Limits; got != (registry.Limits{Memory: "256M", CPU: "150%"}) {
+		t.Fatalf("limits = %+v", got)
+	}
+}
+
+func TestAddAndEditLimits(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module svc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() registry.Limits {
+		t.Helper()
+		s, err := svc()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, ok := s.Get("svc")
+		if !ok {
+			t.Fatal("svc not registered")
+		}
+		return p.Limits
+	}
+
+	if _, _, err := run(t, "add", dir, "--name", "svc", "--mem", "256M", "--cpu", "50%"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "256M", CPU: "50%"}) {
+		t.Fatalf("after add: %+v", got)
+	}
+
+	// Editing one limit leaves the other alone.
+	if _, _, err := run(t, "edit", "svc", "--mem", "1G"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G", CPU: "50%"}) {
+		t.Fatalf("after editing memory: %+v", got)
+	}
+
+	// An unrelated edit keeps both.
+	if _, _, err := run(t, "edit", "svc", "--group", "core"); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G", CPU: "50%"}) {
+		t.Fatalf("an edit that does not mention limits changed them: %+v", got)
+	}
+
+	// Passing an empty value clears that limit.
+	if _, _, err := run(t, "edit", "svc", "--cpu", ""); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G"}) {
+		t.Fatalf("after clearing cpu: %+v", got)
+	}
+
+	// Invalid values are refused and nothing changes.
+	if _, _, err := run(t, "edit", "svc", "--mem", "lots"); err == nil || !strings.Contains(err.Error(), "invalid memory limit") {
+		t.Fatalf("invalid limit accepted: %v", err)
+	}
+	if got := stored(); got != (registry.Limits{Memory: "1G"}) {
+		t.Fatalf("a rejected edit changed the project: %+v", got)
+	}
+}
+
+func TestCgroupCheck(t *testing.T) {
+	present := filepath.Join(t.TempDir(), "cgroup.controllers")
+	if err := os.WriteFile(present, []byte("cpu memory pids"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if detail, ok := cgroupCheck(present); !ok || detail != "unified" {
+		t.Fatalf("v2 present: %q, %v", detail, ok)
+	}
+
+	detail, ok := cgroupCheck(filepath.Join(t.TempDir(), "missing"))
+	if ok {
+		t.Fatal("a missing cgroup v2 must fail the check")
+	}
+	for _, want := range []string{"--mem", "--cpu", "not be enforced"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("warning %q lacks %q", detail, want)
+		}
+	}
+}

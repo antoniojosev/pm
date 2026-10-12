@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/antoniojosev/pm/internal/api"
+	"github.com/antoniojosev/pm/internal/registry"
 	"github.com/antoniojosev/pm/internal/runner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -298,6 +299,7 @@ func runCmd() *cobra.Command {
 	var name string
 	var port int
 	var force, always bool
+	var limits registry.Limits
 	c := &cobra.Command{
 		Use:                "run [-- <cmd>...]",
 		Short:              "Launch the cwd (auto-registers, detects the port, injects the marker)",
@@ -309,7 +311,7 @@ func runCmd() *cobra.Command {
 			}
 			dir, _ := os.Getwd()
 			res, err := s.RunAdhoc(dir, args, runner.AdhocOpts{
-				LaunchOpts: runner.LaunchOpts{Port: port, Force: force},
+				LaunchOpts: runner.LaunchOpts{Port: port, Force: force, Limits: limits},
 				Name:       name,
 				Always:     always,
 			})
@@ -324,12 +326,14 @@ func runCmd() *cobra.Command {
 	c.Flags().IntVar(&port, "port", 0, "pin the port")
 	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken")
 	c.Flags().BoolVar(&always, "always", false, "register as a permanent service")
+	limitFlags(c, &limits, "remembered with the project")
 	return c
 }
 
 func startCmd() *cobra.Command {
 	var port int
 	var force bool
+	var limits registry.Limits
 	c := &cobra.Command{
 		Use:   "start <name>",
 		Short: "Start a registered project",
@@ -340,7 +344,7 @@ func startCmd() *cobra.Command {
 				return err
 			}
 			progress("starting", args[0])
-			res, err := s.Start(args[0], runner.LaunchOpts{Port: port, Force: force})
+			res, err := s.Start(args[0], runner.LaunchOpts{Port: port, Force: force, Limits: limits})
 			progressClear()
 			if err != nil {
 				return err
@@ -351,8 +355,21 @@ func startCmd() *cobra.Command {
 	}
 	c.Flags().IntVar(&port, "port", 0, "pin the port")
 	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken")
+	limitFlags(c, &limits, "this start only; pm edit makes it permanent")
 	return c
 }
+
+// limitFlags adds --mem and --cpu, which fill l when given. scope says how long
+// the value lasts for that command.
+func limitFlags(c *cobra.Command, l *registry.Limits, scope string) {
+	c.Flags().StringVar(&l.Memory, "mem", "", memFlagHelp+"; "+scope+")")
+	c.Flags().StringVar(&l.CPU, "cpu", "", cpuFlagHelp+"; "+scope+")")
+}
+
+const (
+	memFlagHelp = "memory limit, e.g. 512M, 2G or 50% (needs cgroups v2"
+	cpuFlagHelp = "CPU limit as a percentage of one CPU, e.g. 150% (needs cgroups v2"
+)
 
 func stopCmd() *cobra.Command {
 	return &cobra.Command{

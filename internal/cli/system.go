@@ -28,10 +28,7 @@ func doctorCmd() *cobra.Command {
 				st := strings.TrimSpace(string(out))
 				return st, st == "running" || st == "degraded"
 			})
-			check("cgroup v2", func() (string, bool) {
-				_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
-				return "unified", err == nil
-			})
+			check("cgroup v2", func() (string, bool) { return cgroupCheck(cgroupControllers) })
 			check("systemd-run", bin("systemd-run"))
 			check("ss", bin("ss"))
 			check("docker", bin("docker"))
@@ -49,6 +46,19 @@ func doctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// cgroupControllers exists only on the unified (v2) cgroup hierarchy.
+const cgroupControllers = "/sys/fs/cgroup/cgroup.controllers"
+
+// cgroupCheck reports whether cgroups v2 is mounted. Without it systemd cannot
+// enforce MemoryMax= and CPUQuota=, so the --mem/--cpu limits of a project would
+// be silently ignored: the check fails with that consequence spelled out.
+func cgroupCheck(controllersFile string) (string, bool) {
+	if _, err := os.Stat(controllersFile); err != nil {
+		return "unavailable: --mem/--cpu limits will not be enforced (boot with systemd.unified_cgroup_hierarchy=1)", false
+	}
+	return "unified", true
 }
 
 // apiCheck asks the daemon for GET /api/v1/version and summarises it: release,

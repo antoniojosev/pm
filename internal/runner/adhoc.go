@@ -52,6 +52,7 @@ func (r *Runner) RunAdhoc(dir string, cmd []string, opts AdhocOpts) (Result, err
 	if len(p.Cmd) == 0 {
 		return Result{}, fmt.Errorf("no command: use `pm run -- <cmd>` or register the project")
 	}
+	p.Limits = p.Limits.Merge(opts.Limits) // like cmd, explicit limits are remembered
 	p.Draft = false
 	if opts.Always {
 		p.Tier = registry.TierService

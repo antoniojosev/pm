@@ -482,3 +482,25 @@ func TestVersionEndpoint(t *testing.T) {
 		t.Fatalf("/api/version = %d", code)
 	}
 }
+
+func TestProjectLimitsRoundTripAndValidation(t *testing.T) {
+	_, srv := newTestDaemon(t)
+
+	code, _, _ := do(t, srv, "POST", "/api/v1/projects", `{"name":"api","limits":{"memory":"256M","cpu":"150%"}}`)
+	if code != 200 {
+		t.Fatalf("valid limits rejected: %d", code)
+	}
+	_, _, raw := do(t, srv, "GET", "/api/v1/projects", "")
+	if !strings.Contains(raw, `"limits":{"memory":"256M","cpu":"150%"}`) {
+		t.Fatalf("limits not returned by GET /projects: %s", raw)
+	}
+
+	code, obj, _ := do(t, srv, "POST", "/api/v1/projects", `{"name":"bad","limits":{"memory":"lots"}}`)
+	if code != 400 || !strings.Contains(obj["error"].(string), "invalid memory limit") {
+		t.Fatalf("invalid limits: %d %v", code, obj)
+	}
+	_, _, raw = do(t, srv, "GET", "/api/v1/projects", "")
+	if strings.Contains(raw, `"bad"`) {
+		t.Fatalf("a project with invalid limits was stored: %s", raw)
+	}
+}

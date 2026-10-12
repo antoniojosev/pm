@@ -83,7 +83,7 @@ func rmCmd() *cobra.Command {
 func editCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "edit <name>",
-		Short: "Edit metadata (cmd, port, host, group)",
+		Short: "Edit metadata (cmd, port, host, group, limits)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := svc()
@@ -108,6 +108,13 @@ func editCmd() *cobra.Command {
 			}
 			if v, _ := cmd.Flags().GetString("dir"); v != "" {
 				p.Dir = v
+			}
+			// Changed (not != "") so that --mem "" clears a limit.
+			if cmd.Flags().Changed("mem") {
+				p.Limits.Memory, _ = cmd.Flags().GetString("mem")
+			}
+			if cmd.Flags().Changed("cpu") {
+				p.Limits.CPU, _ = cmd.Flags().GetString("cpu")
 			}
 			p.Draft = false
 			if err := s.Edit(p); err != nil {
@@ -344,6 +351,8 @@ func addProjectFlags(c *cobra.Command) {
 	c.Flags().String("cmd", "", "start command")
 	c.Flags().String("host", "", ".localhost host (defaults to = name)")
 	c.Flags().String("group", "", "group")
+	c.Flags().String("mem", "", memFlagHelp+"; saved with the project, --mem \"\" clears it on edit)")
+	c.Flags().String("cpu", "", cpuFlagHelp+"; saved with the project, --cpu \"\" clears it on edit)")
 }
 
 func baseName(dir string) string {

@@ -60,6 +60,9 @@ func (r *Runner) Snapshot() ([]detector.Instance, error) {
 type LaunchOpts struct {
 	Port  int  // 0 = use prefer/auto; >0 = fix this port
 	Force bool // fail on collision instead of reassigning
+	// Limits override the project's own limits for this launch, field by
+	// field; an empty field keeps the project's value.
+	Limits registry.Limits
 }
 
 // Result reports the outcome of a launch.
@@ -91,6 +94,10 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	}
 	if err := r.Paths.EnsureDirs(); err != nil {
 		return Result{}, err
+	}
+	p.Limits = p.Limits.Merge(opts.Limits)
+	if err := p.Limits.Validate(); err != nil {
+		return Result{}, fmt.Errorf("cannot start %q: %w", p.Name, err)
 	}
 	res := Result{Project: p.Name, Unit: UnitName(p.Name)}
 
@@ -139,6 +146,9 @@ func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
 		"--setenv=" + config.EnvMarker + "=" + p.Name,
 		"-p", "StandardOutput=append:" + log,
 		"-p", "StandardError=append:" + log,
+	}
+	for _, prop := range limitProps(p.Limits) {
+		args = append(args, "-p", prop)
 	}
 	for _, e := range env {
 		args = append(args, "--setenv="+e)
@@ -410,11 +420,28 @@ func (r *Runner) writeUnit(p registry.Project, cmd, env []string) error {
 	}
 	fmt.Fprintf(&b, "ExecStart=%s\n", shellJoin(cmd))
 	fmt.Fprintf(&b, "StandardOutput=append:%s\nStandardError=append:%s\n", log, log)
+	for _, prop := range limitProps(p.Limits) {
+		b.WriteString(prop + "\n")
+	}
 	if p.AutoRestart {
 		b.WriteString("Restart=on-failure\nRestartSec=2\n")
 	}
 	b.WriteString("\n[Install]\nWantedBy=default.target\n")
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+// limitProps turns limits into systemd properties. The same strings feed
+// `systemd-run -p` for transient units and the [Service] section of a
+// persistent one. Callers validate the limits first.
+func limitProps(l registry.Limits) []string {
+	var props []string
+	if l.Memory != "" {
+		props = append(props, "MemoryMax="+l.Memory)
+	}
+	if l.CPU != "" {
+		props = append(props, "CPUQuota="+l.CPU)
+	}
+	return props
 }
 
 // --- command / port strategy --------------------------------------------
