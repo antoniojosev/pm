@@ -85,7 +85,7 @@ func TestResolvePort(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			port, note, err := resolvePort(tc.p, tc.opts, tc.occupied)
+			port, note, err := resolvePort(tc.p, tc.opts, tc.occupied, nil)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -99,6 +99,86 @@ func TestResolvePort(t *testing.T) {
 				t.Fatalf("note = %q, want %q", note, tc.wantNote)
 			}
 		})
+	}
+}
+
+func TestResolvePortLeases(t *testing.T) {
+	native := registry.Project{Name: "web", Kind: registry.KindNative, PreferPort: 3000}
+	leased := map[int]bool{3000: true}
+	tests := []struct {
+		name     string
+		opts     LaunchOpts
+		occupied map[int]bool
+		leased   map[int]bool
+		wantPort int
+		wantNote string
+		wantErr  bool
+	}{
+		{
+			name:   "a leased preferred port is steered around",
+			leased: leased, wantPort: 3001, wantNote: "port 3000 taken → using 3001",
+		},
+		{
+			name:   "the replacement skips leased ports too",
+			leased: map[int]bool{3000: true, 3001: true}, wantPort: 3002, wantNote: "port 3000 taken → using 3002",
+		},
+		{
+			name:     "the replacement skips live and leased ports",
+			occupied: map[int]bool{3000: true}, leased: map[int]bool{3001: true}, wantPort: 3002, wantNote: "port 3000 taken → using 3002",
+		},
+		{
+			name: "an explicit port is trusted even when leased",
+			opts: LaunchOpts{Port: 3000}, leased: leased, wantPort: 3000,
+		},
+		{
+			name: "an explicit port that is live still collides, avoiding leased ones",
+			opts: LaunchOpts{Port: 3000}, occupied: map[int]bool{3000: true}, leased: map[int]bool{3001: true},
+			wantPort: 3002, wantNote: "port 3000 taken → using 3002",
+		},
+		{
+			name: "force refuses a leased preferred port",
+			opts: LaunchOpts{Force: true}, leased: leased, wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			port, note, err := resolvePort(native, tc.opts, tc.occupied, tc.leased)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err == nil && (port != tc.wantPort || note != tc.wantNote) {
+				t.Fatalf("got %d %q, want %d %q", port, note, tc.wantPort, tc.wantNote)
+			}
+		})
+	}
+}
+
+// A lease taken before the project starts (here by "another process": a second
+// store on the same file) keeps the launch off that port.
+func TestLaunchAvoidsLeasedPort(t *testing.T) {
+	r, f := newTestRunner(t)
+	_ = r.Store.Upsert(registry.Project{
+		Name: "web", Dir: t.TempDir(), Kind: registry.KindNative, Tier: registry.TierEphemeral,
+		Cmd: []string{"npm", "run", "dev"}, PreferPort: 3000,
+		PortStrategy: registry.PortStrategy{Flag: "--port"},
+	})
+	other, err := registry.Open(r.Paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.AddLease("wt-qa", func(map[int]bool) ([]int, error) { return []int{3000}, nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.Start("web", LaunchOpts{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Port != 3001 {
+		t.Fatalf("port = %d, want 3001 (3000 is leased)", res.Port)
+	}
+	if !strings.Contains(strings.Join(f.argsOf("systemd-run"), " "), "--port 3001") {
+		t.Fatalf("systemd-run args = %v", f.argsOf("systemd-run"))
 	}
 }
 

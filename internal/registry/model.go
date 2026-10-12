@@ -197,4 +197,5 @@ type State struct {
 	Version  int       `json:"version"`
 	Projects []Project `json:"projects"`
 	Groups   []Group   `json:"groups"`
+	Leases   []Lease   `json:"leases,omitempty"`
 }
