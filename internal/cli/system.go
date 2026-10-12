@@ -39,7 +39,7 @@ func doctorCmd() *cobra.Command {
 				return "not installed (pm setup installs it)", false
 			})
 			check("daemon", func() (string, bool) {
-				out, err := exec.Command("curl", "-s", config.DaemonURL()+"/api/health").Output()
+				out, err := exec.Command("curl", "-s", config.DaemonURL()+"/api/v1/health").Output()
 				return config.DaemonURL(), err == nil && strings.Contains(string(out), "ok")
 			})
 			return nil
@@ -165,7 +165,7 @@ func waitHealth(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: time.Second}
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(config.DaemonURL() + "/api/health")
+		resp, err := client.Get(config.DaemonURL() + "/api/v1/health")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {

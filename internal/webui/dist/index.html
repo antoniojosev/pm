@@ -182,7 +182,7 @@ let editingName=null, claimingPort=null, logSource=null, rows=[], showSystem=fal
 function toggleSystem(){showSystem=!showSystem;render()}
 
 function toast(msg,kind){const t=document.createElement('div');t.className=kind||'';t.textContent=msg;$('#toast').appendChild(t);setTimeout(()=>t.remove(),3500)}
-async function api(path,opts){const r=await fetch('/api'+path,opts);const d=await r.json().catch(()=>({}));if(!r.ok||d.error){throw new Error(d.error||('HTTP '+r.status))}return d}
+async function api(path,opts){const r=await fetch('/api/v1'+path,opts);const d=await r.json().catch(()=>({}));if(!r.ok||d.error){throw new Error(d.error||('HTTP '+r.status))}return d}
 async function act(path,method='POST'){try{const d=await api(path,{method});toast('✓ '+path.split('/').slice(-1),'ok');refresh()}catch(e){toast('✗ '+e.message,'err')}}
 
 function tierBadge(t){return `<span class="badge ${t}">${t||''}</span>`}
@@ -259,7 +259,7 @@ function renderGroups(){
 
 async function refresh(){try{rows=await api('/ps');render()}catch(e){}}
 function connectSSE(){
-  const es=new EventSource('/api/events');
+  const es=new EventSource('/api/v1/events');
   es.onmessage=e=>{try{rows=JSON.parse(e.data);render();setDaemon(true)}catch(_){}}
   es.onerror=()=>{setDaemon(false);es.close();setTimeout(connectSSE,3000)}
 }
@@ -336,7 +336,7 @@ async function scan(){try{const a=await api('/scan',{method:'POST'});toast('✓ 
 
 // --- logs ---
 function showLogs(name){$('#logTitle').textContent='Logs · '+name;$('#logbox').textContent='';show('logOverlay');
-  logSource=new EventSource('/api/logs/stream?name='+encodeURIComponent(name));
+  logSource=new EventSource('/api/v1/logs/stream?name='+encodeURIComponent(name));
   logSource.onmessage=e=>{const b=$('#logbox');b.textContent+=e.data+'\n';b.scrollTop=b.scrollHeight}}
 function closeLogs(){if(logSource){logSource.close();logSource=null}close_('logOverlay')}
 
