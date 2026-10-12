@@ -12,6 +12,7 @@ import (
 
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/detector"
+	"github.com/antoniojosev/pm/internal/ports"
 	"github.com/antoniojosev/pm/internal/registry"
 	"github.com/antoniojosev/pm/internal/runner"
 	"github.com/antoniojosev/pm/internal/scan"
@@ -23,6 +24,11 @@ type Service struct {
 	Store *registry.Store
 	Run   *runner.Runner
 	Roots []string // directories scanned for projects
+	// PortFree is the bind test leases use to vet a candidate port. New sets
+	// ports.Free; tests swap it.
+	PortFree func(port int) bool
+
+	leaseNotify notifier
 }
 
 // New wires a Service around a store.
@@ -32,6 +38,8 @@ func New(paths config.Paths, store *registry.Store, roots []string) *Service {
 		Store: store,
 		Run:   runner.New(paths, store),
 		Roots: roots,
+
+		PortFree: ports.Free,
 	}
 }
 

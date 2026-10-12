@@ -215,7 +215,7 @@ func TestEveryRouteUnderBothPrefixes(t *testing.T) {
 	mux := http.NewServeMux()
 	d.routes(mux)
 	for _, rt := range d.apiRoutes() {
-		path := strings.NewReplacer("{name}", "x", "{port}", "1").Replace(rt.Path)
+		path := strings.NewReplacer("{name}", "x", "{port}", "1", "{id}", "l-x").Replace(rt.Path)
 		for _, prefix := range []string{APIPrefix, legacyPrefix} {
 			req := httptest.NewRequest(rt.Method, prefix+path, nil)
 			if _, pattern := mux.Handler(req); pattern == "" {

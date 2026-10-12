@@ -3,13 +3,16 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/antoniojosev/pm/internal/api"
 	"github.com/antoniojosev/pm/internal/registry"
 	"github.com/antoniojosev/pm/internal/runner"
 )
@@ -50,6 +53,9 @@ func (d *Daemon) apiRoutes() []Route {
 		{"DELETE", "/groups/{name}", d.hDeleteGroup},
 		{"POST", "/groups/{name}/up", d.hGroupUp},
 		{"POST", "/groups/{name}/down", d.hGroupDown},
+		{"POST", "/leases", d.hCreateLease},
+		{"GET", "/leases", d.hLeases},
+		{"DELETE", "/leases/{id}", d.hReleaseLease},
 		{"GET", "/events", d.hEvents},
 		{"GET", "/logs/stream", d.hLogStream},
 		{"POST", "/instances/{port}/stop", d.hInstanceStop},
@@ -304,7 +310,40 @@ func (d *Daemon) hGroupDown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ok())
 }
 
-// hEvents streams the ps table as SSE every 2s (and once immediately).
+// hCreateLease reserves ports for an owner.
+func (d *Daemon) hCreateLease(w http.ResponseWriter, r *http.Request) {
+	var req api.LeaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	lease, err := d.svc.CreateLease(req)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, lease)
+}
+
+// hLeases lists leases, optionally only those of ?owner=.
+func (d *Daemon) hLeases(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, d.svc.Leases(r.URL.Query().Get("owner")))
+}
+
+func (d *Daemon) hReleaseLease(w http.ResponseWriter, r *http.Request) {
+	if _, err := d.svc.ReleaseLease(r.PathValue("id")); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, ok())
+}
+
+// hEvents streams live state as SSE. The unnamed `data:` frames carry the ps
+// table, immediately and then every 2s. Named frames report changes: a
+// `lease.created` or `lease.released` event with the lease as data, as soon as
+// the daemon makes the change and within one tick when another process (the
+// CLI) does. A client sees only the leases that change after it connected;
+// GET /leases gives the starting point.
 func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -314,6 +353,11 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
+	// Take the wake-up channel before the baseline so a change in between is
+	// not lost: it either shows in the baseline or closes the channel.
+	wake := d.svc.LeaseChanged()
+	known := leasesByID(d.svc.Leases(""))
 
 	send := func() {
 		rows, err := d.svc.PS()
@@ -326,6 +370,15 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("\n\n"))
 		flusher.Flush()
 	}
+	sendLeaseChanges := func() {
+		current := leasesByID(d.svc.Leases(""))
+		for _, ev := range diffLeases(known, current) {
+			b, _ := json.Marshal(ev.Lease)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, b)
+		}
+		known = current
+		flusher.Flush()
+	}
 	send()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -333,10 +386,54 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-wake:
+			wake = d.svc.LeaseChanged()
+			sendLeaseChanges()
 		case <-ticker.C:
 			send()
+			sendLeaseChanges()
 		}
 	}
+}
+
+// leaseEvent is one change between two lease sets.
+type leaseEvent struct {
+	Name  string // lease.created | lease.released
+	Lease registry.Lease
+}
+
+func leasesByID(ls []registry.Lease) map[string]registry.Lease {
+	out := make(map[string]registry.Lease, len(ls))
+	for _, l := range ls {
+		out[l.ID] = l
+	}
+	return out
+}
+
+// diffLeases lists what changed from prev to cur, creations first, each group
+// in id order so the stream is deterministic.
+func diffLeases(prev, cur map[string]registry.Lease) []leaseEvent {
+	var evs []leaseEvent
+	for _, id := range sortedIDs(cur) {
+		if _, had := prev[id]; !had {
+			evs = append(evs, leaseEvent{"lease.created", cur[id]})
+		}
+	}
+	for _, id := range sortedIDs(prev) {
+		if _, has := cur[id]; !has {
+			evs = append(evs, leaseEvent{"lease.released", prev[id]})
+		}
+	}
+	return evs
+}
+
+func sortedIDs(m map[string]registry.Lease) []string {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // hLogStream tails a project's log file over SSE.
