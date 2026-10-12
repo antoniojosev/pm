@@ -16,6 +16,7 @@ import (
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/detector"
 	"github.com/antoniojosev/pm/internal/registry"
+	"github.com/antoniojosev/pm/internal/testfake"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -140,7 +141,7 @@ func (c *mcpClient) call(tool, args string) (text string, isError bool) {
 func TestToolsAreAdvertised(t *testing.T) {
 	c := newMCPClient(t)
 	raw := c.rpc("tools/list", `{}`)
-	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down"} {
+	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down", "pm_run"} {
 		if !strings.Contains(raw, `"name":"`+tool+`"`) {
 			t.Errorf("tool %s not advertised", tool)
 		}
@@ -191,5 +192,71 @@ func TestToolsRoundTrip(t *testing.T) {
 	}
 	if _, isErr := c.call("pm_remove", `{"name":"web"}`); !isErr {
 		t.Fatal("removing twice should fail")
+	}
+}
+
+func TestPmRunStartsListsAndStops(t *testing.T) {
+	c := newMCPClient(t)
+	sd := testfake.Install(t)
+	dir := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "x.log")
+
+	args := fmt.Sprintf(`{"name":"x","dir":%q,"cmd":["sleep","100"],"env":{"A":"1"},"limits":{"memory":"256M","cpu":"50%%"},"log":%q,"owner":"wt-qa"}`, dir, logFile)
+	out, isErr := c.call("pm_run", args)
+	if isErr {
+		t.Fatalf("pm_run = %s", out)
+	}
+	var res struct {
+		Unit  string `json:"unit"`
+		PID   int    `json:"pid"`
+		Ports []int  `json:"ports"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Unit != "pm-x.service" || res.PID != testfake.MainPID || res.Ports == nil {
+		t.Fatalf("pm_run result = %s (%v)", out, err)
+	}
+	sdArgs := sd.Calls("systemd-run")[0]
+	for _, want := range []string{"--setenv=A=1", "MemoryMax=256M", "CPUQuota=50%", "StandardOutput=append:" + logFile} {
+		found := false
+		for _, a := range sdArgs {
+			found = found || a == want
+		}
+		if !found {
+			t.Errorf("systemd-run lacks %q: %v", want, sdArgs)
+		}
+	}
+
+	out, isErr = c.call("pm_list", `{}`)
+	if isErr || !strings.Contains(out, `"name": "x"`) || !strings.Contains(out, `"owner": "wt-qa"`) || !strings.Contains(out, `"status": "up"`) {
+		t.Fatalf("pm_list = %v %s", isErr, out)
+	}
+	if out, isErr := c.call("pm_stop", `{"name":"x"}`); isErr || out != "stopped" {
+		t.Fatalf("pm_stop = %v %s", isErr, out)
+	}
+	if sd.Active("pm-x.service") {
+		t.Fatal("pm_stop left the unit running")
+	}
+	out, _ = c.call("pm_list", `{}`)
+	if strings.Contains(out, `"name": "x"`) {
+		t.Fatalf("a stopped run is still listed: %s", out)
+	}
+}
+
+func TestPmRunErrorsAreToolErrors(t *testing.T) {
+	c := newMCPClient(t)
+	sd := testfake.Install(t)
+	dir, _ := json.Marshal(t.TempDir())
+	for name, args := range map[string]string{
+		"no cmd":        `{"name":"x","dir":` + string(dir) + `}`,
+		"unknown field": `{"name":"x","dir":` + string(dir) + `,"cmd":["true"],"limit":{"memory":"1M"}}`,
+		"bad limit":     `{"name":"x","dir":` + string(dir) + `,"cmd":["true"],"limits":{"cpu":"x"}}`,
+		"cmd as string": `{"name":"x","dir":` + string(dir) + `,"cmd":"sleep 100"}`,
+		"bad port":      `{"name":"x","dir":` + string(dir) + `,"cmd":["true"],"ports":[0]}`,
+	} {
+		if out, isErr := c.call("pm_run", args); !isErr || out == "" {
+			t.Errorf("%s: want a tool error, got %v %q", name, isErr, out)
+		}
+	}
+	if len(sd.Calls("systemd-run")) != 0 {
+		t.Fatal("systemd-run ran for a refused call")
 	}
 }

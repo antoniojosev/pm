@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -82,13 +83,13 @@ func renderPS(w *os.File, rows []api.Row, opts psOpts) {
 		for _, g := range groups {
 			all = append(all, g...)
 		}
-		nameW, portW, urlW := psWidths(all)
+		nameW, portW, urlW, ownerW := psWidths(all)
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, colHeader(nameW, portW, urlW))
+		fmt.Fprintln(w, colHeader(nameW, portW, urlW, ownerW))
 		for i, g := range groups {
 			prefix := []string{upPrefix, failPrefix, downPrefix}[i]
 			for _, r := range g {
-				fmt.Fprintln(w, projectRow(prefix, r, nameW, portW, urlW))
+				fmt.Fprintln(w, projectRow(prefix, r, nameW, portW, urlW, ownerW))
 			}
 		}
 	}
@@ -166,25 +167,42 @@ func summaryLine(text string) string {
 }
 
 // colHeader renders the dim, uppercase NAME/PORT/URL/TIER header aligned to the
-// data columns (4-space indent, matching the running glyph prefix width).
-func colHeader(nameW, portW, urlW int) string {
-	return "    " + styleDim.Render(pad("NAME", nameW)+"  "+pad("PORT", portW)+"  "+pad("URL", urlW)+"  "+"TIER")
+// data columns (4-space indent, matching the running glyph prefix width). The
+// OWNER column is there only when some row has an owner (ownerW > 0).
+func colHeader(nameW, portW, urlW, ownerW int) string {
+	h := pad("NAME", nameW) + "  " + pad("PORT", portW) + "  " + pad("URL", urlW) + "  " + "TIER"
+	if ownerW > 0 {
+		h = pad("NAME", nameW) + "  " + pad("PORT", portW) + "  " + pad("URL", urlW) + "  " + pad("TIER", tierW) + "  " + "OWNER"
+	}
+	return "    " + styleDim.Render(h)
 }
 
+// tierW is the width of the TIER column when OWNER follows it: the longest
+// tier, "ephemeral".
+const tierW = len("ephemeral")
+
 // psWidths computes column widths from the (already truncated) row names,
-// never dropping below the header label widths so headers stay aligned.
-func psWidths(rows []api.Row) (nameW, portW, urlW int) {
+// never dropping below the header label widths so headers stay aligned. ownerW
+// is 0 when no row has an owner, which drops the OWNER column.
+func psWidths(rows []api.Row) (nameW, portW, urlW, ownerW int) {
 	nameW, portW, urlW = len("NAME"), len("PORT"), len("URL")
 	for _, r := range rows {
 		nameW = maxi(nameW, lipgloss.Width(truncName(r.Name)))
 		portW = maxi(portW, lipgloss.Width(portToken(r.Port)))
 		urlW = maxi(urlW, lipgloss.Width(urlToken(r)))
+		if r.Owner != "" {
+			ownerW = maxi(ownerW, lipgloss.Width(r.Owner))
+		}
+	}
+	if ownerW > 0 {
+		ownerW = maxi(ownerW, len("OWNER"))
 	}
 	return
 }
 
-// projectRow renders one aligned NAME/PORT/URL/TIER row with the given prefix.
-func projectRow(prefix string, r api.Row, nameW, portW, urlW int) string {
+// projectRow renders one aligned NAME/PORT/URL/TIER[/OWNER] row with the given
+// prefix.
+func projectRow(prefix string, r api.Row, nameW, portW, urlW, ownerW int) string {
 	name := styleName.Render(pad(truncName(r.Name), nameW))
 	var port string
 	if r.Port != 0 {
@@ -194,7 +212,13 @@ func projectRow(prefix string, r api.Row, nameW, portW, urlW int) string {
 	}
 	url := styleURL.Render(pad(urlToken(r), urlW))
 	tier := styleTier.Render(r.Tier)
+	if ownerW > 0 {
+		tier = styleTier.Render(pad(r.Tier, tierW))
+	}
 	line := prefix + name + "  " + port + "  " + url + "  " + tier
+	if ownerW > 0 {
+		line += "  " + styleName.Render(r.Owner)
+	}
 	if r.Status == "failed" {
 		reason := "failed"
 		if r.Failure != "" {
@@ -317,38 +341,118 @@ func maxi(a, b int) int {
 }
 
 func runCmd() *cobra.Command {
-	var name string
+	var name, owner, logFile string
 	var port int
-	var force, always bool
+	var ports []int
+	var env []string
+	var force, always, asJSON bool
 	var limits registry.Limits
 	c := &cobra.Command{
-		Use:                "run [-- <cmd>...]",
-		Short:              "Launch the cwd (auto-registers, detects the port, injects the marker)",
-		DisableFlagParsing: false,
+		Use:   "run [--name <name>] [-- <cmd>...]",
+		Short: "Launch the cwd, or any command by name without registering it",
+		Long: `Without --name, launches the cwd as a project: it auto-registers, detects the
+stack and its port, and remembers the command and --mem/--cpu.
+
+With --name, starts <cmd> as that name in the cwd and registers nothing. It
+runs under systemd as pm-<name>.service, shows in 'pm ps' with its owner and
+ports while it lives, and 'pm stop <name>' stops it and forgets it. Give the
+ports it will use (from 'pm lease') with --ports; pm checks they are free and
+keeps them from other leases, but does not pass them to the process: put them
+in --env or in the command, the way your stack wants.
+
+Examples:
+  pm run -- npm run dev
+  pm run --name api-qa --mem 512M -- npm run dev
+  pm run --name api-qa --owner wt-qa --ports 4100 -e PORT=4100 -- ./serve
+  pm stop api-qa`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := svc()
 			if err != nil {
 				return err
 			}
 			dir, _ := os.Getwd()
-			res, err := s.RunAdhoc(dir, args, runner.AdhocOpts{
-				LaunchOpts: runner.LaunchOpts{Port: port, Force: force, Limits: limits},
-				Name:       name,
-				Always:     always,
+			if name == "" {
+				for _, f := range []string{"owner", "env", "log", "ports", "json"} {
+					if cmd.Flags().Changed(f) {
+						return fmt.Errorf("--%s needs --name: it applies to a process started by name, not to the cwd project", f)
+					}
+				}
+				res, err := s.RunAdhoc(dir, args, runner.AdhocOpts{
+					LaunchOpts: runner.LaunchOpts{Port: port, Force: force, Limits: limits},
+					Always:     always,
+				})
+				if err != nil {
+					return err
+				}
+				printResult(res)
+				return nil
+			}
+			for _, f := range []string{"port", "force", "always"} {
+				if cmd.Flags().Changed(f) {
+					return fmt.Errorf("--%s applies to a registered project: drop --name, or 'pm add' the project and 'pm start' it (a named run takes --ports)", f)
+				}
+			}
+			envMap, err := parseEnvFlags(env)
+			if err != nil {
+				return err
+			}
+			res, err := s.StartRun(runner.RunSpec{
+				Name: name, Dir: dir, Cmd: args, Env: envMap, Limits: limits,
+				Log: logFile, Owner: owner, Ports: ports,
 			})
 			if err != nil {
 				return err
 			}
-			printResult(res)
+			if asJSON {
+				return writeJSONLine(os.Stdout, res)
+			}
+			printRun(os.Stdout, name, owner, res)
 			return nil
 		},
 	}
-	c.Flags().StringVar(&name, "name", "", "project name (defaults to the dir)")
-	c.Flags().IntVar(&port, "port", 0, "pin the port")
-	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken")
-	c.Flags().BoolVar(&always, "always", false, "register as a permanent service")
-	limitFlags(c, &limits, "remembered with the project")
+	c.Flags().StringVar(&name, "name", "", "start the command under this name without registering it (alone: the project's name, defaults to the dir)")
+	c.Flags().IntVar(&port, "port", 0, "pin the port (without --name)")
+	c.Flags().BoolVar(&force, "force", false, "fail if the port is taken (without --name)")
+	c.Flags().BoolVar(&always, "always", false, "register as a permanent service (without --name)")
+	c.Flags().StringVar(&owner, "owner", "", "who the process is for, e.g. a worktree or script name (with --name; default "+registry.DefaultOwner+")")
+	c.Flags().StringArrayVarP(&env, "env", "e", nil, "KEY=VALUE environment variable, repeatable (with --name; never stored)")
+	c.Flags().StringVar(&logFile, "log", "", "absolute path of the log file (with --name; default ~/.pm/logs/<name>.log)")
+	c.Flags().IntSliceVar(&ports, "ports", nil, "ports the process will use, e.g. from pm lease (with --name)")
+	c.Flags().BoolVar(&asJSON, "json", false, "print the result as JSON (with --name)")
+	limitFlags(c, &limits, "remembered with the project; with --name, for this process only")
 	return c
+}
+
+// parseEnvFlags turns repeated KEY=VALUE flags into a map. The last one wins.
+func parseEnvFlags(pairs []string) (map[string]string, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(pairs))
+	for _, kv := range pairs {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --env %q: use KEY=VALUE", kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// printRun reports a process started by name.
+func printRun(w io.Writer, name, owner string, res runner.RunResult) {
+	if owner == "" {
+		owner = registry.DefaultOwner
+	}
+	line := styleUp.Render("▶") + " " + styleName.Render(name)
+	if res.PID != 0 {
+		line += " " + styleDim.Render(fmt.Sprintf("pid %d", res.PID))
+	}
+	if len(res.Ports) > 0 {
+		line += " " + stylePort.Render(portList(res.Ports))
+	}
+	line += "  " + styleDim.Render("owner "+owner+" · "+res.Unit)
+	fmt.Fprintln(w, line)
 }
 
 func startCmd() *cobra.Command {

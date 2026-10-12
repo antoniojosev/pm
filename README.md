@@ -18,7 +18,7 @@ Built for WSL2 + systemd + Chrome.
 - **Collision → next port**: if the preferred port is taken, it reassigns to the next free one and injects the port according to the stack (`--port` in Vite, `-p` in Next, `PORT=` env, `0.0.0.0:{port}` in Django…).
 - **`.localhost` names**: Caddy on `:80` routes `myapp.localhost` → the real live port. The config regenerates itself from state.
 - **Tiers**: `ephemeral` (transient service, gone when it stops) ↔ `service` (persistent user unit, starts at boot). Toggle with `promote`/`demote`.
-- **Resource limits**: `--mem 2G --cpu 150%` caps memory and CPU through systemd (`MemoryMax=` / `CPUQuota=`). A memory cap also forbids swap (`MemorySwapMax=0`), so a project that passes it is killed by the kernel (OOM) instead of being paged out, and its unit ends `failed`: `pm ps` shows it as `✗ ... failed: oom-kill` (the dashboard and `/api/v1/ps` report status `failed` with a `failure` reason) until you start or stop it again. `pm add|edit --mem/--cpu` store the limits with the project and `pm run --mem/--cpu` remembers them; `pm start --mem/--cpu` applies to that start only and is refused for `service`-tier projects (their unit persists: use `pm edit`, then `pm restart` so the unit on disk, which the next boot uses, is rewritten). Docker projects take no limits (the unit only wraps the compose client; set `mem_limit`/`cpus` in the compose file). Needs cgroups v2 with the `memory` and `cpu` controllers delegated to your user manager; `pm doctor` tells you if either is missing.
+- **Resource limits**: `--mem 2G --cpu 150%` caps memory and CPU through systemd (`MemoryMax=` / `CPUQuota=`). A memory cap also forbids swap (`MemorySwapMax=0`), so a project that passes it is killed by the kernel (OOM) instead of being paged out, and its unit ends `failed`: `pm ps` shows it as `✗ ... failed: oom-kill` (the dashboard and `/api/v1/ps` report status `failed` with a `failure` reason) until you start or stop it again. `pm add|edit --mem/--cpu` store the limits with the project and `pm run --mem/--cpu` remembers them (with `--name` they apply to that process only); `pm start --mem/--cpu` applies to that start only and is refused for `service`-tier projects (their unit persists: use `pm edit`, then `pm restart` so the unit on disk, which the next boot uses, is rewritten). Docker projects take no limits (the unit only wraps the compose client; set `mem_limit`/`cpus` in the compose file). Needs cgroups v2 with the `memory` and `cpu` controllers delegated to your user manager; `pm doctor` tells you if either is missing.
 
 ## Install
 
@@ -36,6 +36,7 @@ systemctl --user enable --now pm-daemon pm-caddy
 
 ```
 pm run -- <cmd>        launches the cwd (auto-registers, detects port, marks it)
+pm run --name <n> -- <cmd>     starts a command by name without registering it: --owner, --ports, -e K=V, --log, --mem/--cpu; shows in pm ps with its owner, pm stop forgets it
 pm ps                  list running projects (add -a to include stopped)
 pm start|stop|restart <name>   start accepts --mem 512M --cpu 150%
 pm promote|demote <name>       ephemeral ↔ permanent service
@@ -63,7 +64,7 @@ The daemon exposes MCP over HTTP at `/mcp`. Add it to your `.mcp.json`:
 { "mcpServers": { "pm": { "type": "http", "url": "http://127.0.0.1:9797/mcp" } } }
 ```
 
-Tools (mirror of the CLI): `pm_list`, `pm_start`, `pm_stop`, `pm_restart`, `pm_promote`, `pm_demote`, `pm_register`, `pm_remove`, `pm_claim`, `pm_scan`, `pm_logs`, `pm_group_up`, `pm_group_down`.
+Tools (mirror of the CLI): `pm_list`, `pm_start`, `pm_stop`, `pm_restart`, `pm_promote`, `pm_demote`, `pm_register`, `pm_remove`, `pm_claim`, `pm_scan`, `pm_logs`, `pm_group_up`, `pm_group_down`, `pm_run` (start a process by specification, same body as `POST /api/v1/run`).
 
 ## Config
 

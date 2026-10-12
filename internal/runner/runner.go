@@ -89,6 +89,9 @@ func (r *Runner) Start(name string, opts LaunchOpts) (Result, error) {
 }
 
 func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
+	if err := refuseRun(p, "start"); err != nil {
+		return Result{}, err
+	}
 	if p.Dir == "" {
 		return Result{}, fmt.Errorf("cannot start %q: no local directory (registered by name only)", p.Name)
 	}
@@ -148,7 +151,7 @@ func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
 	// in the failed state, and systemd-run refuses to reuse its name until that
 	// is cleared. Nothing to clear is the normal case, so the error is ignored.
 	_ = systemctl("reset-failed", UnitName(p.Name))
-	log := r.Paths.LogFile(p.Name)
+	log := r.logPath(p)
 	args := []string{
 		"--user",
 		"--unit=" + UnitName(p.Name),
@@ -175,15 +178,28 @@ func (r *Runner) runTransient(p registry.Project, cmd, env []string) error {
 // Stop tears down the project. If it runs under a pm systemd unit, systemctl
 // stops the whole cgroup tree. If it's an external/claimed process (no pm
 // unit), it falls back to stopping the detected process directly.
+//
+// A run started by specification (pm run, POST /run) is forgotten once it is
+// stopped, so nothing of it is left in the listing. If its process is already
+// gone, stopping only forgets the record.
 func (r *Runner) Stop(name string) error {
 	unit := UnitName(name)
+	_ = r.Store.Reload() // the run may have been started by another process
+	p, registered := r.Store.Get(name)
+	isRun := registered && p.IsRun()
 	if unitExists(unit) {
 		if err := systemctl("stop", unit); err != nil {
 			return err
 		}
 		// Transient units vanish on stop; persistent ones stay enabled unless demoted.
 		_ = systemctl("reset-failed", unit)
+		if isRun {
+			_ = r.Store.Remove(name)
+		}
 		return nil
+	}
+	if isRun {
+		return r.Store.Remove(name)
 	}
 	return r.stopExternal(name)
 }
@@ -278,6 +294,12 @@ func (r *Runner) instancesOnPort(port int) []detector.Instance {
 
 // Restart stops then starts again.
 func (r *Runner) Restart(name string, opts LaunchOpts) (Result, error) {
+	// Checked before stopping: stopping a run forgets it.
+	if p, ok := r.Store.Get(name); ok {
+		if err := refuseRun(p, "restart"); err != nil {
+			return Result{}, err
+		}
+	}
 	_ = r.Stop(name)
 	return r.Start(name, opts)
 }
@@ -287,6 +309,9 @@ func (r *Runner) Promote(name string) error {
 	p, ok := r.Store.Get(name)
 	if !ok {
 		return fmt.Errorf("project %q is not registered", name)
+	}
+	if err := refuseRun(p, "promote"); err != nil {
+		return err
 	}
 	wasRunning := r.IsActive(name)
 	_ = r.Stop(name)
@@ -306,6 +331,9 @@ func (r *Runner) Demote(name string) error {
 	p, ok := r.Store.Get(name)
 	if !ok {
 		return fmt.Errorf("project %q is not registered", name)
+	}
+	if err := refuseRun(p, "demote"); err != nil {
+		return err
 	}
 	_ = systemctl("disable", "--now", UnitName(name))
 	_ = os.Remove(r.unitPath(name))
@@ -349,17 +377,26 @@ func (r *Runner) IsActive(name string) bool {
 	return strings.TrimSpace(string(out)) == "active"
 }
 
-// FailedUnits returns, for every pm unit systemd still holds in the failed
-// state, the reason it gave (the unit's Result: "oom-kill", "exit-code",
-// "signal", ...), keyed by unit name. One systemctl call covers every project.
-// Stopping a project clears its entry.
-func (r *Runner) FailedUnits() map[string]string {
+// UnitState is what systemd says about one pm unit it still has loaded.
+type UnitState struct {
+	// Active is ActiveState=: "active", "failed", "activating"...
+	Active string
+	// Result is Result=: "success", "oom-kill", "exit-code", "signal"...
+	Result string
+	// PID is MainPID=, 0 when there is none.
+	PID int
+}
+
+// UnitStates returns every pm unit systemd has loaded, keyed by unit name. A
+// stopped transient unit is unloaded and absent; a failed one stays until it
+// is cleared. One systemctl call covers every project.
+func (r *Runner) UnitStates() map[string]UnitState {
 	out, err := execCommand("systemctl", "--user", "show", config.UnitPrefix+"*.service",
-		"-p", "Id", "-p", "ActiveState", "-p", "Result").Output()
+		"-p", "Id", "-p", "ActiveState", "-p", "Result", "-p", "MainPID").Output()
 	if err != nil {
 		return nil
 	}
-	failed := map[string]string{}
+	states := map[string]UnitState{}
 	for _, block := range strings.Split(string(out), "\n\n") {
 		props := map[string]string{}
 		for _, line := range strings.Split(block, "\n") {
@@ -367,8 +404,23 @@ func (r *Runner) FailedUnits() map[string]string {
 				props[k] = v
 			}
 		}
-		if props["ActiveState"] == "failed" && props["Id"] != "" {
-			failed[props["Id"]] = props["Result"]
+		if props["Id"] == "" {
+			continue
+		}
+		pid, _ := strconv.Atoi(props["MainPID"])
+		states[props["Id"]] = UnitState{Active: props["ActiveState"], Result: props["Result"], PID: pid}
+	}
+	return states
+}
+
+// FailedUnits returns, for every pm unit systemd still holds in the failed
+// state, the reason it gave (the unit's Result: "oom-kill", "exit-code",
+// "signal", ...), keyed by unit name. Stopping a project clears its entry.
+func (r *Runner) FailedUnits() map[string]string {
+	failed := map[string]string{}
+	for id, st := range r.UnitStates() {
+		if st.Active == "failed" {
+			failed[id] = st.Result
 		}
 	}
 	return failed
