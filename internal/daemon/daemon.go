@@ -51,10 +51,18 @@ func (d *Daemon) mount(mux mounter) {
 	mux.Handle("/mcp/", mcp.Handler(d.svc))
 }
 
-// Serve blocks serving until ctx is cancelled.
-func (d *Daemon) Serve(ctx context.Context) error {
+// Handler is everything the daemon serves as one http.Handler, without
+// listening or running the proxy loop. Serve uses it; so can a test that wants
+// the real daemon behind an httptest server.
+func (d *Daemon) Handler() http.Handler {
 	mux := http.NewServeMux()
 	d.mount(mux)
+	return mux
+}
+
+// Serve blocks serving until ctx is cancelled.
+func (d *Daemon) Serve(ctx context.Context) error {
+	mux := d.Handler()
 
 	srv := &http.Server{
 		Addr:    "127.0.0.1:" + itoa(d.port),
