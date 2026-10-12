@@ -44,6 +44,7 @@ pm add|edit|rm <name>          registry CRUD
 pm claim <port>                adopt an 'unmanaged' listener
 pm scan                        discover projects under the roots (PM_ROOTS)
 pm listen                      ports on the machine that pm doesn't manage
+pm lease [n] --owner <o>       reserve n ports for an owner before starting anything (ls, release <id>)
 pm logs <name> [-f]            logs (stream with -f)
 pm open <name> | pm ui         open in the browser
 pm serve                       start the daemon (API + web + SSE + MCP)

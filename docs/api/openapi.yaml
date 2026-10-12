@@ -26,6 +26,7 @@ tags:
   - name: projects
   - name: processes
   - name: groups
+  - name: leases
   - name: discovery
   - name: streams
 paths:
@@ -296,14 +297,89 @@ paths:
       responses:
         "200": {$ref: "#/components/responses/OK"}
         "400": {$ref: "#/components/responses/Error"}
+  /leases:
+    get:
+      tags: [leases]
+      operationId: listLeases
+      summary: List port leases
+      parameters:
+        - name: owner
+          in: query
+          description: Only the leases of this owner (case-insensitive).
+          schema: {type: string}
+      responses:
+        "200":
+          description: Leases, oldest first. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Lease"}
+    post:
+      tags: [leases]
+      operationId: createLease
+      summary: Reserve ports for an owner
+      description: |
+        Reserves `count` ports without starting anything. A port is handed out
+        only when no listener holds it, a test bind on every interface
+        succeeds (so a port `ss` does not show still counts as taken) and no
+        other lease has it. Choosing the ports and recording the lease is one
+        atomic step: two simultaneous requests never receive the same port.
+
+        The lease does not open the port; the owner's process binds it later.
+        Until the lease is released, pm marks its ports as taken for other
+        leases and for the ports pm picks on its own when it starts a project.
+        An explicit port (`?port=`, `--port`) is still honoured, since pm cannot
+        tell whether the caller owns the lease.
+
+        Release it with `DELETE /leases/{id}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/LeaseRequest"}
+      responses:
+        "200":
+          description: The lease and its ports, ascending.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Lease"}
+        "400": {$ref: "#/components/responses/Error"}
+  /leases/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, example: l-3f9a1c0b7d2e}
+    delete:
+      tags: [leases]
+      operationId: releaseLease
+      summary: Release a lease
+      description: Frees its ports. An unknown id is a 400.
+      responses:
+        "200": {$ref: "#/components/responses/OK"}
+        "400": {$ref: "#/components/responses/Error"}
   /events:
     get:
       tags: [streams]
       operationId: events
-      summary: Live ps table (Server-Sent Events)
+      summary: Live state (Server-Sent Events)
       description: |
-        Emits the `/ps` array as one JSON `data:` event immediately and then
-        every 2 seconds, until the client disconnects.
+        Emits the `/ps` array as one JSON `data:` event (an unnamed event, the
+        one `EventSource.onmessage` receives) immediately and then every 2
+        seconds, until the client disconnects.
+
+        Changes arrive as named events whose `data:` is the JSON of the
+        object concerned:
+
+        - `lease.created`: a lease was taken; `data` is the `Lease`.
+        - `lease.released`: a lease was released; `data` is the `Lease` as it
+          was.
+
+        A lease change made through the daemon is sent at once; one made by
+        another process (the `pm lease` CLI) within 2 seconds. Only changes
+        after the client connected are sent: read `GET /leases` for the
+        starting point.
       responses:
         "200":
           description: SSE stream.
@@ -450,6 +526,39 @@ components:
         caddy: {type: boolean, description: "The caddy binary is on PATH, so <name>.localhost routing works."}
         docker: {type: boolean, description: "The docker daemon answers (`docker version` succeeds), so docker projects can start."}
         systemd: {type: boolean, description: "The systemd --user manager is running (or degraded), so pm can launch units."}
+    LeaseRequest:
+      type: object
+      description: Body of `POST /leases`.
+      required: [owner]
+      properties:
+        owner:
+          type: string
+          example: wt-qa
+          description: 'Who the ports are for: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 characters.'
+        count:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          description: How many ports. 0 or omitted means 1.
+        prefer:
+          type: integer
+          minimum: 0
+          maximum: 65535
+          description: |
+            First port to try. Busy ports are skipped, so the lease may end up
+            with higher ones; it fails if `count` ports are not found within
+            the next 2000. 0 or omitted starts at 20000.
+    Lease:
+      type: object
+      required: [id, owner, ports, created_at]
+      properties:
+        id: {type: string, example: l-3f9a1c0b7d2e}
+        owner: {type: string, example: wt-qa}
+        ports:
+          type: array
+          items: {type: integer}
+        created_at: {type: string, format: date-time}
     Error:
       type: object
       required: [error]

@@ -8,11 +8,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/antoniojosev/pm/internal/config"
 )
 
-// Store is a concurrency-safe, file-backed registry.
+// Store is a concurrency-safe, file-backed registry. Every mutation takes an
+// in-process mutex and an flock on a sidecar file, and starts from what is on
+// disk, so the CLI and the daemon (two processes sharing one registry.json)
+// never overwrite each other's changes.
 type Store struct {
 	mu    sync.RWMutex
 	path  string
@@ -45,6 +49,11 @@ func Open(paths config.Paths) (*Store, error) {
 func (s *Store) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+// loadLocked replaces the in-memory state with the file's. Caller holds s.mu.
+func (s *Store) loadLocked() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -64,6 +73,51 @@ func (s *Store) Reload() error {
 	}
 	s.state = st
 	return nil
+}
+
+// update is the one way to mutate the registry: it serialises writers across
+// goroutines and processes, loads the file's current state, runs fn on it and
+// saves the result. If fn fails the change is dropped and the in-memory state
+// goes back to what is on disk. Without the reload a process holding a stale
+// copy would write it back and erase what another process added meanwhile,
+// leases included.
+func (s *Store) update(fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlock, err := s.flock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.loadLocked(); err != nil {
+		return err
+	}
+	if err := fn(); err != nil {
+		_ = s.loadLocked()
+		return err
+	}
+	return s.save()
+}
+
+// flock takes an exclusive advisory lock on <registry>.lock and returns the
+// function that releases it. The lock is on a sidecar because save() replaces
+// the registry file by rename, which would orphan a lock held on the file.
+func (s *Store) flock() (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
 
 // save writes state atomically. Caller must hold the write lock.
@@ -137,50 +191,50 @@ func (s *Store) Upsert(p Project) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, existing := range s.state.Projects {
-		if strings.EqualFold(existing.Name, p.Name) {
-			s.state.Projects[i] = p
-			return s.save()
+	return s.update(func() error {
+		for i, existing := range s.state.Projects {
+			if strings.EqualFold(existing.Name, p.Name) {
+				s.state.Projects[i] = p
+				return nil
+			}
 		}
-	}
-	s.state.Projects = append(s.state.Projects, p)
-	return s.save()
+		s.state.Projects = append(s.state.Projects, p)
+		return nil
+	})
 }
 
 // Remove deletes a project by name.
 func (s *Store) Remove(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.state.Projects[:0]
-	removed := false
-	for _, p := range s.state.Projects {
-		if strings.EqualFold(p.Name, name) {
-			removed = true
-			continue
+	return s.update(func() error {
+		out := s.state.Projects[:0]
+		removed := false
+		for _, p := range s.state.Projects {
+			if strings.EqualFold(p.Name, name) {
+				removed = true
+				continue
+			}
+			out = append(out, p)
 		}
-		out = append(out, p)
-	}
-	if !removed {
-		return fmt.Errorf("project %q is not in the registry", name)
-	}
-	s.state.Projects = out
-	return s.save()
+		if !removed {
+			return fmt.Errorf("project %q is not in the registry", name)
+		}
+		s.state.Projects = out
+		return nil
+	})
 }
 
 // UpsertGroup inserts or replaces a group.
 func (s *Store) UpsertGroup(g Group) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, existing := range s.state.Groups {
-		if strings.EqualFold(existing.Name, g.Name) {
-			s.state.Groups[i] = g
-			return s.save()
+	return s.update(func() error {
+		for i, existing := range s.state.Groups {
+			if strings.EqualFold(existing.Name, g.Name) {
+				s.state.Groups[i] = g
+				return nil
+			}
 		}
-	}
-	s.state.Groups = append(s.state.Groups, g)
-	return s.save()
+		s.state.Groups = append(s.state.Groups, g)
+		return nil
+	})
 }
 
 // GetGroup returns a group by name.
@@ -197,20 +251,20 @@ func (s *Store) GetGroup(name string) (Group, bool) {
 
 // RemoveGroup deletes a group by name.
 func (s *Store) RemoveGroup(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.state.Groups[:0]
-	removed := false
-	for _, g := range s.state.Groups {
-		if strings.EqualFold(g.Name, name) {
-			removed = true
-			continue
+	return s.update(func() error {
+		out := s.state.Groups[:0]
+		removed := false
+		for _, g := range s.state.Groups {
+			if strings.EqualFold(g.Name, name) {
+				removed = true
+				continue
+			}
+			out = append(out, g)
 		}
-		out = append(out, g)
-	}
-	if !removed {
-		return fmt.Errorf("group %q does not exist", name)
-	}
-	s.state.Groups = out
-	return s.save()
+		if !removed {
+			return fmt.Errorf("group %q does not exist", name)
+		}
+		s.state.Groups = out
+		return nil
+	})
 }

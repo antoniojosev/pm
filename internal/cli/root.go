@@ -80,7 +80,7 @@ Examples:
 	}
 	group(grpLifecycle, runCmd(), startCmd(), stopCmd(), restartCmd(), psCmd(), logsCmd(), openCmd(), uiCmd())
 	group(grpRegistry, addCmd(), editCmd(), rmCmd(), claimCmd(), scanCmd())
-	group(grpState, promoteCmd(), demoteCmd(), upCmd(), downCmd(), groupCmd())
+	group(grpState, promoteCmd(), demoteCmd(), upCmd(), downCmd(), groupCmd(), leaseCmd())
 	group(grpSystem, serveCmd(), setupCmd(), doctorCmd(), listenCmd())
 
 	cmd, err := root.ExecuteC()

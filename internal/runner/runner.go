@@ -106,7 +106,8 @@ func (r *Runner) launch(p registry.Project, opts LaunchOpts) (Result, error) {
 	}
 	res := Result{Project: p.Name, Unit: UnitName(p.Name)}
 
-	port, note, err := resolvePort(p, opts, r.occupiedPorts())
+	_ = r.Store.Reload() // leases may have been taken by another process
+	port, note, err := resolvePort(p, opts, r.occupiedPorts(), r.Store.LeasedPorts())
 	if err != nil {
 		return Result{}, err
 	}
@@ -380,25 +381,48 @@ func (r *Runner) FailedUnits() map[string]string {
 // are bumped to the next free one (or refused with opts.Force); docker
 // projects keep their compose mapping untouched. A zero port means "let the
 // stack choose" and is discovered after launch.
-func resolvePort(p registry.Project, opts LaunchOpts, occupied map[int]bool) (port int, note string, err error) {
+//
+// leased holds the ports reserved by a lease. They count as taken for a port pm
+// picks on its own (the project's preferred one, and the replacement when that
+// is taken) but not for an explicit opts.Port: pm cannot tell who holds the
+// lease, so whoever passes the port is trusted to be its owner.
+func resolvePort(p registry.Project, opts LaunchOpts, occupied, leased map[int]bool) (port int, note string, err error) {
 	port = opts.Port
 	if port == 0 {
 		port = p.PreferPort
 	}
-	if p.Kind != registry.KindNative || port == 0 || !occupied[port] {
+	if p.Kind != registry.KindNative || port == 0 {
+		return port, "", nil
+	}
+	taken := occupied[port] || (opts.Port == 0 && leased[port])
+	if !taken {
 		return port, "", nil
 	}
 	if opts.Force {
 		return 0, "", fmt.Errorf("port %d is taken (--force)", port)
 	}
-	free := nextFree(port, occupied)
+	free := nextFree(port, unionPorts(occupied, leased))
 	return free, fmt.Sprintf("port %d taken → using %d", port, free), nil
+}
+
+func unionPorts(a, b map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(a)+len(b))
+	for p := range a {
+		out[p] = true
+	}
+	for p := range b {
+		out[p] = true
+	}
+	return out
 }
 
 func (r *Runner) occupiedPorts() map[int]bool {
 	insts, _ := r.Snapshot()
 	return occupiedFrom(insts)
 }
+
+// LivePorts returns every port with a listener right now.
+func (r *Runner) LivePorts() map[int]bool { return r.occupiedPorts() }
 
 // occupiedFrom collects every bound port from a live snapshot.
 func occupiedFrom(insts []detector.Instance) map[int]bool {
