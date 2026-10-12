@@ -134,6 +134,29 @@ func (s *Store) ReleaseLease(id string) (Lease, error) {
 	return released, err
 }
 
+// ReleaseOwnerLeases deletes every lease of owner (case-insensitive) in one
+// atomic step and returns them, oldest first. None is not an error.
+func (s *Store) ReleaseOwnerLeases(owner string) ([]Lease, error) {
+	var released []Lease
+	err := s.update(func() error {
+		released = nil
+		kept := s.state.Leases[:0]
+		for _, l := range s.state.Leases {
+			if strings.EqualFold(l.Owner, owner) {
+				released = append(released, copyLease(l))
+				continue
+			}
+			kept = append(kept, l)
+		}
+		s.state.Leases = kept
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return released, nil
+}
+
 func leasedPorts(leases []Lease) map[int]bool {
 	out := map[int]bool{}
 	for _, l := range leases {

@@ -219,3 +219,36 @@ func TestConcurrentLeasesNeverShareAPort(t *testing.T) {
 		t.Fatalf("%d distinct ports, want %d", len(seen), stores*perStore*count)
 	}
 }
+
+func TestReleaseOwnerLeasesTakesOnlyThatOwnersAndFreesItsPorts(t *testing.T) {
+	paths := tempPaths(t)
+	s, _ := Open(paths)
+	a1, _ := s.AddLease("wt-qa", next(2))
+	other, _ := s.AddLease("wt-dev", next(1))
+	a2, _ := s.AddLease("WT-QA", next(1)) // owners compare case-insensitively
+
+	released, err := s.ReleaseOwnerLeases("wt-qa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 2 || released[0].ID != a1.ID || released[1].ID != a2.ID || !slices.Equal(released[0].Ports, a1.Ports) {
+		t.Fatalf("released = %+v, want the two leases of wt-qa, oldest first", released)
+	}
+	left := s.Leases()
+	if len(left) != 1 || left[0].ID != other.ID {
+		t.Fatalf("left = %+v", left)
+	}
+	// persisted, and the ports are free again
+	again, _ := Open(paths)
+	if got := again.Leases(); len(got) != 1 || got[0].ID != other.ID {
+		t.Fatalf("reopened = %+v", got)
+	}
+	if again.LeasedPorts()[a1.Ports[0]] {
+		t.Fatal("a released port is still reserved")
+	}
+
+	// an owner with no leases is not an error
+	if released, err := s.ReleaseOwnerLeases("nobody"); err != nil || len(released) != 0 {
+		t.Fatalf("nobody = %+v, %v", released, err)
+	}
+}

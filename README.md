@@ -12,8 +12,9 @@ Built for WSL2 + systemd + Chrome.
 
 ## Core idea
 
-- **Launch anything with a prefix**: `pm run -- npm run dev`. pm puts it inside a *systemd unit* (`pm-<project>.service`) with the `PM_PROJECT` env var, so it can **attribute** the process and **kill its whole tree** when you stop it.
+- **Launch anything with a prefix**: `pm run -- npm run dev`. pm puts it inside a *systemd unit* (`pm-<project>.service`) with the `PM_PROJECT` env var (and `PM_OWNER` when it has an owner), so it can **attribute** the process and **kill its whole tree** when you stop it.
 - **Detects the real system state** with `ss` + `/proc` (cwd, cgroup, cmdline) + `docker ps`. It even sees what you started outside of pm (it shows up as *unmanaged* and you adopt it).
+- **Owners by marker**: a script that leaves processes running can start them with `PM_OWNER=<name>` in the environment. pm shows them with that owner (even unmanaged) and `pm down --owner <name>` stops them together with everything else the owner has.
 - **Discovers the port on its own**: it looks at what the cgroup binds; no need to declare it.
 - **Collision → next port**: if the preferred port is taken, it reassigns to the next free one and injects the port according to the stack (`--port` in Vite, `-p` in Next, `PORT=` env, `0.0.0.0:{port}` in Django…).
 - **`.localhost` names**: Caddy on `:80` routes `myapp.localhost` → the real live port. The config regenerates itself from state.
@@ -42,6 +43,7 @@ pm ps                  list running projects (add -a to include stopped)
 pm start|stop|restart <name>   start accepts --mem 512M --cpu 150%
 pm promote|demote <name>       ephemeral ↔ permanent service
 pm up|down <group>             bring a group up/down
+pm down --owner <o>            stop everything that belongs to an owner (its projects, runs, and any process with PM_OWNER=<o>) and release its leases; --keep-leases keeps them
 pm add|edit|rm <name>          registry CRUD
 pm claim <port>                adopt an 'unmanaged' listener
 pm scan                        discover projects under the roots (PM_ROOTS)
@@ -65,7 +67,7 @@ The daemon exposes MCP over HTTP at `/mcp`. Add it to your `.mcp.json`:
 { "mcpServers": { "pm": { "type": "http", "url": "http://127.0.0.1:9797/mcp" } } }
 ```
 
-Tools (mirror of the CLI): `pm_list`, `pm_start`, `pm_stop`, `pm_restart`, `pm_promote`, `pm_demote`, `pm_register`, `pm_remove`, `pm_claim`, `pm_scan`, `pm_logs`, `pm_group_up`, `pm_group_down`, `pm_run` (start a process by specification, same body as `POST /api/v1/run`).
+Tools (mirror of the CLI): `pm_list`, `pm_start`, `pm_stop`, `pm_restart`, `pm_promote`, `pm_demote`, `pm_register`, `pm_remove`, `pm_claim`, `pm_scan`, `pm_logs`, `pm_group_up`, `pm_group_down`, `pm_run` (start a process by specification, same body as `POST /api/v1/run`), `pm_owner_down` (what `pm down --owner` does).
 
 ## Config
 

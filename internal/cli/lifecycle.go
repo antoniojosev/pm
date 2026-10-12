@@ -608,22 +608,99 @@ func upCmd() *cobra.Command {
 }
 
 func downCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "down <group>",
-		Short: "Bring down every project in a group",
-		Args:  cobra.ExactArgs(1),
+	var owner string
+	var keepLeases, asJSON bool
+	c := &cobra.Command{
+		Use:   "down <group> | down --owner <owner>",
+		Short: "Bring down a group, or everything that belongs to an owner",
+		Long: `Stops every project of a group, or, with --owner, everything that belongs to an
+owner: its projects, the processes it started with 'pm run' (they are forgotten
+once stopped) and any process that carries PM_OWNER=<owner> in its environment,
+say one a script left running. The owner's port leases are released too, so
+nothing of it is left in 'pm ls' or 'pm lease ls'; --keep-leases keeps them.
+
+Registered projects that name the owner stay in the catalog, stopped, as after
+'pm stop'. If something cannot be stopped the rest still is, the leases are
+kept and the command fails.
+
+Examples:
+  pm down web-stack             stop the projects of a group
+  pm down --owner wt-qa         stop and clean up everything of wt-qa
+  pm down --owner wt-qa --keep-leases`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if owner == "" {
+				if len(args) != 1 {
+					return fmt.Errorf("name a group (pm down <group>) or an owner (pm down --owner <owner>)")
+				}
+				if keepLeases || asJSON {
+					return fmt.Errorf("--keep-leases and --json apply to --owner only")
+				}
+				s, err := svc()
+				if err != nil {
+					return err
+				}
+				if err := s.Down(args[0]); err != nil {
+					return err
+				}
+				fmt.Printf("■ group %s down\n", args[0])
+				return nil
+			}
+			if len(args) != 0 {
+				return fmt.Errorf("give a group or --owner, not both")
+			}
 			s, err := svc()
 			if err != nil {
 				return err
 			}
-			if err := s.Down(args[0]); err != nil {
-				return err
+			var res api.OwnerResult
+			if keepLeases {
+				res, err = s.StopOwner(owner)
+			} else {
+				res, err = s.DeleteOwner(owner)
 			}
-			fmt.Printf("■ group %s down\n", args[0])
-			return nil
+			if asJSON {
+				if jerr := writeJSONLine(os.Stdout, res); jerr != nil {
+					return jerr
+				}
+			} else {
+				printOwnerResult(os.Stdout, res)
+			}
+			return err
 		},
 	}
+	c.Flags().StringVar(&owner, "owner", "", "bring down everything that belongs to this owner (a worktree or script name)")
+	c.Flags().BoolVar(&keepLeases, "keep-leases", false, "with --owner: stop the processes but keep the port leases")
+	c.Flags().BoolVar(&asJSON, "json", false, "with --owner: print the result as JSON")
+	return c
+}
+
+// printOwnerResult lists what `pm down --owner` stopped and released.
+func printOwnerResult(w io.Writer, res api.OwnerResult) {
+	for _, st := range res.Stopped {
+		fmt.Fprintf(w, "%s %s %s\n", styleDim.Render("■"), styleName.Render(stoppedLabel(st)), styleDim.Render(st.Kind))
+	}
+	if n := len(res.LeasesReleased); n > 0 {
+		noun := "leases"
+		if n == 1 {
+			noun = "lease"
+		}
+		fmt.Fprintf(w, "%s %d %s released (%s)\n", styleDim.Render("■"), n, noun, strings.Join(res.LeasesReleased, " "))
+	}
+	if len(res.Stopped) == 0 && len(res.LeasesReleased) == 0 && len(res.Errors) == 0 {
+		fmt.Fprintf(w, "%s nothing running or leased for owner %s\n", styleDim.Render("○"), res.Owner)
+		return
+	}
+	if len(res.Errors) == 0 {
+		fmt.Fprintf(w, "%s owner %s down\n", styleOK.Render(glyphOK), res.Owner)
+	}
+}
+
+func stoppedLabel(st runner.Stopped) string {
+	if st.Kind == runner.StoppedProcess {
+		return fmt.Sprintf("pid %d", st.PID)
+	}
+	return st.Name
 }
 
 func printResult(r runner.Result) {

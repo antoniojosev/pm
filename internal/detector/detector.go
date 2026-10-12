@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/antoniojosev/pm/internal/config"
+	"github.com/antoniojosev/pm/internal/registry"
 )
 
 // Source describes how an instance was identified, ranked by confidence.
@@ -35,6 +36,9 @@ type Instance struct {
 	Source    Source `json:"source"`
 	Docker    bool   `json:"docker"`
 	Container string `json:"container,omitempty"` // docker container id/name, if Docker
+	// Owner is the PM_OWNER marker of the process, when it carries a valid one:
+	// who it belongs to, whether pm launched it or a script left it running.
+	Owner string `json:"owner,omitempty"`
 	// Compose is the com.docker.compose.project label of a container that
 	// belongs to a compose stack, whatever pm project it was attributed to.
 	Compose string `json:"compose,omitempty"`
@@ -146,19 +150,21 @@ func (d Detector) attribute(port, pid int) Instance {
 	inst := Instance{Port: port, PID: pid, Source: SourceUnknown}
 	inst.Cmd = procCmdline(pid)
 	inst.Cwd = procCwd(pid)
+	environ := procEnviron(pid)
+	inst.Owner = ownerFromEnviron(environ)
 
 	// 1. systemd cgroup: strongest signal for anything we launched.
 	if unit, name := procUnit(pid); name != "" {
 		inst.Unit = unit
 		inst.Project = name
 		inst.Source = SourceCgroup
-		if procHasMarker(pid, name) {
+		if strings.EqualFold(markerFromEnviron(environ), name) {
 			inst.Source = SourceMarker
 		}
 		return inst
 	}
 	// 2. env marker without a pm cgroup (rare, e.g. re-exec).
-	if name := procMarker(pid); name != "" {
+	if name := markerFromEnviron(environ); name != "" {
 		inst.Project = name
 		inst.Source = SourceMarker
 		return inst
@@ -210,27 +216,41 @@ func unitFromCgroup(content string) (unit, name string) {
 	return "", ""
 }
 
-// procMarker reads PM_PROJECT from /proc/<pid>/environ.
-func procMarker(pid int) string {
+// procEnviron reads /proc/<pid>/environ: a NUL-separated block, "" when the
+// process is gone or belongs to another user.
+func procEnviron(pid int) string {
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
 		return ""
 	}
-	return markerFromEnviron(string(b))
+	return string(b)
 }
 
 // markerFromEnviron extracts PM_PROJECT from a NUL-separated environ block.
 func markerFromEnviron(content string) string {
+	return envValue(content, config.EnvMarker)
+}
+
+// ownerFromEnviron extracts PM_OWNER from a NUL-separated environ block. A
+// value outside the owner grammar counts as no owner: the environment of an
+// arbitrary process is not trusted, and pm shows and matches owners as plain
+// names.
+func ownerFromEnviron(content string) string {
+	v := envValue(content, config.EnvOwner)
+	if registry.ValidateOwner(v) != nil {
+		return ""
+	}
+	return v
+}
+
+// envValue returns the value of key in a NUL-separated environ block.
+func envValue(content, key string) string {
 	for _, kv := range strings.Split(content, "\x00") {
-		if v, ok := strings.CutPrefix(kv, config.EnvMarker+"="); ok {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
 			return v
 		}
 	}
 	return ""
-}
-
-func procHasMarker(pid int, name string) bool {
-	return strings.EqualFold(procMarker(pid), name)
 }
 
 // portFromAddr parses "127.0.0.1:18000", "*:5173", "[::]:3000" -> port.

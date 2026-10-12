@@ -113,6 +113,28 @@ func TestMarkerFromEnviron(t *testing.T) {
 	}
 }
 
+func TestOwnerFromEnviron(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"present", "HOME=/home/x\x00PM_OWNER=wt-qa\x00PM_PROJECT=web\x00", "wt-qa"},
+		{"absent", "HOME=/home/x\x00PM_PROJECT=web\x00", ""},
+		{"prefix must be exact", "XPM_OWNER=wt-qa\x00PM_OWNER_OLD=x\x00", ""},
+		{"empty value", "PM_OWNER=\x00", ""},
+		{"outside the grammar", "PM_OWNER=a b\x00", ""},
+		{"escape sequence", "PM_OWNER=\x1b[31mred\x00", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ownerFromEnviron(tc.content); got != tc.want {
+				t.Fatalf("ownerFromEnviron = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // fakeRun scripts the output of external commands by binary name.
 func fakeRun(t *testing.T, outputs map[string]string) {
 	t.Helper()
@@ -129,7 +151,7 @@ func fakeRun(t *testing.T, outputs map[string]string) {
 
 // spawnMarked starts a child carrying PM_PROJECT so attribution can be
 // exercised against a real /proc entry that belongs to this test.
-func spawnMarked(t *testing.T, project string) int {
+func spawnMarked(t *testing.T, project string, extraEnv ...string) int {
 	t.Helper()
 	if _, err := os.Stat("/proc/self/environ"); err != nil {
 		t.Skip("procfs not available")
@@ -139,6 +161,7 @@ func spawnMarked(t *testing.T, project string) int {
 	}
 	cmd := exec.Command("sleep", "30")
 	cmd.Env = append(os.Environ(), "PM_PROJECT="+project)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn sleep: %v", err)
 	}
@@ -147,7 +170,7 @@ func spawnMarked(t *testing.T, project string) int {
 		_, _ = cmd.Process.Wait()
 	})
 	// /proc/<pid>/environ and cmdline populate a moment after exec.
-	for i := 0; i < 40 && procMarker(cmd.Process.Pid) == ""; i++ {
+	for i := 0; i < 40 && markerFromEnviron(procEnviron(cmd.Process.Pid)) == ""; i++ {
 		time.Sleep(25 * time.Millisecond)
 	}
 	return cmd.Process.Pid
@@ -166,6 +189,19 @@ func TestAttributeByMarker(t *testing.T) {
 	}
 	if inst.Cwd == "" {
 		t.Fatal("cwd should be resolved from /proc")
+	}
+}
+
+// A process a script left running with PM_OWNER set carries its owner, with or
+// without a PM_PROJECT marker.
+func TestAttributeReadsTheOwnerMarker(t *testing.T) {
+	pid := spawnMarked(t, "demo", "PM_OWNER=wt-qa")
+	if inst := (Detector{}).attribute(4000, pid); inst.Owner != "wt-qa" || inst.Project != "demo" {
+		t.Fatalf("attribute = %+v, want owner wt-qa on project demo", inst)
+	}
+	pid = spawnMarked(t, "demo", "PM_OWNER=not valid")
+	if inst := (Detector{}).attribute(4000, pid); inst.Owner != "" {
+		t.Fatalf("attribute = %+v, an owner outside the grammar must be ignored", inst)
 	}
 }
 

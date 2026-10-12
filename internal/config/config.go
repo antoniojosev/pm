@@ -12,6 +12,11 @@ const (
 	UnitPrefix = "pm-"
 	// EnvMarker is injected into every launched process so we can attribute it back.
 	EnvMarker = "PM_PROJECT"
+	// EnvOwner is the second marker: who a process belongs to. pm injects it
+	// into every unit of a project that has an owner, and any script can set
+	// it on a process it leaves running so that pm groups that process under
+	// the owner (`pm down --owner`, POST /owners/{owner}/stop).
+	EnvOwner = "PM_OWNER"
 	// DNSSuffix is the local TLD Chrome resolves to loopback with zero config.
 	DNSSuffix = ".localhost"
 	// DefaultDaemonPort is where the HTTP API + web UI + MCP live.
