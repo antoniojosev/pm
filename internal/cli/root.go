@@ -145,5 +145,20 @@ func projectFromFlags(cmd *cobra.Command) registry.Project {
 	if cmdline != "" {
 		p.Cmd = strings.Fields(cmdline)
 	}
+	if c := composeFromFlags(cmd); c != nil {
+		p.Compose = c
+		p.Kind = registry.KindDocker
+	}
 	return p
+}
+
+// composeFromFlags reads --compose-project and --compose-file; nil when
+// neither was given.
+func composeFromFlags(cmd *cobra.Command) *registry.Compose {
+	project, _ := cmd.Flags().GetString("compose-project")
+	file, _ := cmd.Flags().GetString("compose-file")
+	if project == "" && file == "" {
+		return nil
+	}
+	return &registry.Compose{File: file, Project: project}
 }

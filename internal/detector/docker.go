@@ -20,7 +20,18 @@ func (d Detector) dockerListeners() []Instance {
 	if err != nil {
 		return nil
 	}
-	return parseDockerPS(out)
+	insts := parseDockerPS(out)
+	if d.ComposeToName != nil {
+		for i := range insts {
+			if insts[i].Compose == "" {
+				continue
+			}
+			if name, ok := d.ComposeToName(insts[i].Compose); ok {
+				insts[i].Project = name
+			}
+		}
+	}
+	return insts
 }
 
 // parseDockerPS converts `docker ps --format '{{json .}}'` lines into one
@@ -37,7 +48,8 @@ func parseDockerPS(out string) []Instance {
 		if json.Unmarshal([]byte(line), &c) != nil {
 			continue
 		}
-		name := composeProject(c.Labels)
+		compose := composeProject(c.Labels)
+		name := compose
 		if name == "" {
 			name = c.Names
 		}
@@ -53,6 +65,7 @@ func parseDockerPS(out string) []Instance {
 				Source:    SourceDocker,
 				Docker:    true,
 				Container: container,
+				Compose:   compose,
 			})
 		}
 	}

@@ -258,6 +258,9 @@ func (s *Service) Add(p registry.Project) error {
 	}
 	if p.Kind == "" {
 		p.Kind = registry.KindNative
+		if p.Compose != nil {
+			p.Kind = registry.KindDocker // a compose stack is a docker project
+		}
 	}
 	return s.Store.Upsert(p)
 }

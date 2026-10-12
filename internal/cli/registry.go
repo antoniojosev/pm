@@ -50,6 +50,9 @@ func addCmd() *cobra.Command {
 				p.Stack = det.Stack
 				p.PortStrategy = det.PortStrategy
 			}
+			if p.Compose != nil {
+				p.Kind = registry.KindDocker // detection must not turn a compose stack native
+			}
 			if err := s.Add(p); err != nil {
 				return err
 			}
@@ -83,7 +86,7 @@ func rmCmd() *cobra.Command {
 func editCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "edit <name>",
-		Short: "Edit metadata (cmd, port, host, group, limits)",
+		Short: "Edit metadata (cmd, port, host, group, limits, compose)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := svc()
@@ -115,6 +118,26 @@ func editCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("cpu") {
 				p.Limits.CPU, _ = cmd.Flags().GetString("cpu")
+			}
+			// Changed, like --mem: --compose-project "" with no --compose-file
+			// clears the stack.
+			if cmd.Flags().Changed("compose-project") || cmd.Flags().Changed("compose-file") {
+				c := registry.Compose{}
+				if p.Compose != nil {
+					c = *p.Compose
+				}
+				if cmd.Flags().Changed("compose-project") {
+					c.Project, _ = cmd.Flags().GetString("compose-project")
+				}
+				if cmd.Flags().Changed("compose-file") {
+					c.File, _ = cmd.Flags().GetString("compose-file")
+				}
+				p.Compose = &c
+				if c.Project == "" && c.File == "" {
+					p.Compose = nil
+				} else {
+					p.Kind = registry.KindDocker
+				}
 			}
 			p.Draft = false
 			if err := s.Edit(p); err != nil {
@@ -351,6 +374,8 @@ func addProjectFlags(c *cobra.Command) {
 	c.Flags().String("cmd", "", "start command")
 	c.Flags().String("host", "", ".localhost host (defaults to = name)")
 	c.Flags().String("group", "", "group")
+	c.Flags().String("compose-project", "", "docker compose project name: pm adds -p and COMPOSE_PROJECT_NAME so copies of one repo do not collide (makes it a docker project)")
+	c.Flags().String("compose-file", "", "docker compose file, absolute or relative to the project dir (with --compose-project)")
 	c.Flags().String("mem", "", memFlagHelp+"; saved with the project, --mem \"\" clears it on edit)")
 	c.Flags().String("cpu", "", cpuFlagHelp+"; saved with the project, --cpu \"\" clears it on edit)")
 }

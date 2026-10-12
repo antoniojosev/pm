@@ -241,6 +241,36 @@ func TestPmRunStartsListsAndStops(t *testing.T) {
 	}
 }
 
+func TestPmRunWithCompose(t *testing.T) {
+	c := newMCPClient(t)
+	sd := testfake.Install(t)
+	dir, _ := json.Marshal(t.TempDir())
+
+	args := `{"name":"x","dir":` + string(dir) + `,"cmd":["docker","compose","up"],"compose":{"project":"shop-qa","file":"c.yml"}}`
+	if out, isErr := c.call("pm_run", args); isErr {
+		t.Fatalf("pm_run = %s", out)
+	}
+	sdArgs := sd.Calls("systemd-run")[0]
+	var got []string
+	for i, a := range sdArgs {
+		if a == "--" {
+			got = sdArgs[i+1:]
+		}
+	}
+	if strings.Join(got, " ") != "docker compose -f c.yml -p shop-qa up" {
+		t.Errorf("command = %v", got)
+	}
+	// the tool schema offers it, optional
+	raw := c.rpc("tools/list", `{}`)
+	if !strings.Contains(raw, `"compose"`) {
+		t.Errorf("pm_run does not advertise compose")
+	}
+	bad := `{"name":"y","dir":` + string(dir) + `,"cmd":["true"],"compose":{"project":"NO"}}`
+	if out, isErr := c.call("pm_run", bad); !isErr || !strings.Contains(out, "invalid compose project") {
+		t.Errorf("bad compose = %v %q", isErr, out)
+	}
+}
+
 func TestPmRunErrorsAreToolErrors(t *testing.T) {
 	c := newMCPClient(t)
 	sd := testfake.Install(t)

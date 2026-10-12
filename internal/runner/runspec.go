@@ -42,6 +42,13 @@ type RunSpec struct {
 	Env map[string]string `json:"env,omitempty"`
 	// Limits caps memory and CPU of the unit (needs cgroups v2).
 	Limits registry.Limits `json:"limits,omitzero"`
+	// Compose gives the process a compose project of its own, so two runs of
+	// the same compose file (two worktrees of one repo) do not share containers,
+	// networks or volumes. pm sets COMPOSE_PROJECT_NAME and, when Cmd is
+	// `docker compose ...`, adds -f and -p after it (see applyCompose). The run
+	// is then a docker run: limits do not apply, the stack's containers are
+	// attributed to it by their com.docker.compose.project label.
+	Compose *registry.Compose `json:"compose,omitempty"`
 	// Log is the file stdout and stderr are appended to: an absolute path.
 	// Empty means ~/.pm/logs/<name>.log.
 	Log string `json:"log,omitempty"`
@@ -101,6 +108,18 @@ func (s RunSpec) Normalize() (RunSpec, error) {
 	if err := s.Limits.Validate(); err != nil {
 		return s, err
 	}
+	if s.Compose != nil {
+		// Checked as the docker project the run becomes: it refuses limits.
+		if err := (registry.Project{Kind: registry.KindDocker, Limits: s.Limits, Compose: s.Compose}).Validate(); err != nil {
+			return s, err
+		}
+		if _, set := s.Env[EnvComposeProject]; set {
+			return s, fmt.Errorf("env %s is reserved with compose: pm sets it from compose.project", EnvComposeProject)
+		}
+		if _, set := s.Env[EnvComposeFile]; set && s.Compose.File != "" {
+			return s, fmt.Errorf("env %s is reserved with compose.file: pm sets it itself", EnvComposeFile)
+		}
+	}
 	if s.Log != "" {
 		if !filepath.IsAbs(s.Log) || strings.ContainsFunc(s.Log, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 			return s, fmt.Errorf("invalid log %q: use an absolute path without control characters", s.Log)
@@ -133,14 +152,22 @@ func (s RunSpec) Normalize() (RunSpec, error) {
 
 // project is the registry entry that stands for the run while it lives.
 func (s RunSpec) project() registry.Project {
+	kind := registry.KindNative
+	var compose *registry.Compose
+	if s.Compose != nil {
+		kind = registry.KindDocker
+		c := *s.Compose
+		compose = &c
+	}
 	return registry.Project{
-		Name:   s.Name,
-		Dir:    s.Dir,
-		Cmd:    append([]string{}, s.Cmd...),
-		Kind:   registry.KindNative,
-		Tier:   registry.TierEphemeral,
-		Limits: s.Limits,
-		Owner:  s.Owner,
+		Name:    s.Name,
+		Dir:     s.Dir,
+		Cmd:     append([]string{}, s.Cmd...),
+		Kind:    kind,
+		Tier:    registry.TierEphemeral,
+		Limits:  s.Limits,
+		Compose: compose,
+		Owner:   s.Owner,
 		Run: &registry.RunInfo{
 			Ports:     append([]int{}, s.Ports...),
 			Log:       s.Log,
@@ -181,8 +208,10 @@ func (r *Runner) LaunchSpec(spec RunSpec) (RunResult, error) {
 	for k, v := range spec.Env {
 		env = append(env, k+"="+v)
 	}
+	cmd, composeEnv := applyCompose(spec.Cmd, p.Compose)
+	env = append(env, composeEnv...)
 	sort.Strings(env)
-	if err := r.runTransient(p, spec.Cmd, env); err != nil {
+	if err := r.runTransient(p, cmd, env); err != nil {
 		// Only our own record: a concurrent launch of the same name cannot
 		// have one (AddRun refused it), but a later one may have written its own.
 		_ = r.Store.RemoveRun(p.Name, p.Run.Nonce)

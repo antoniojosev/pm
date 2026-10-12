@@ -130,6 +130,8 @@ type Project struct {
 	Group        string       `json:"group,omitempty"`
 	// Limits caps memory and CPU of the launched unit (needs cgroups v2).
 	Limits Limits `json:"limits,omitzero"`
+	// Compose names the docker compose stack of a docker project (see Compose).
+	Compose *Compose `json:"compose,omitempty"`
 	// Owner is who the project belongs to: a worktree, a script, an agent. pm
 	// does not interpret it beyond grouping and listing. Empty for projects
 	// registered by hand.
@@ -173,7 +175,8 @@ type RunInfo struct {
 func (p Project) IsRun() bool { return p.Run != nil }
 
 // Validate checks the project's own consistency: valid limits, a valid owner
-// when there is one, and no limits on a docker project, where the unit only
+// when there is one, a valid compose stack only on a docker project, and no
+// limits on a docker project, where the unit only
 // wraps the `docker compose` client while the containers live outside its
 // cgroup, so a cap would do nothing.
 func (p Project) Validate() error {
@@ -182,6 +185,14 @@ func (p Project) Validate() error {
 	}
 	if p.Owner != "" {
 		if err := ValidateOwner(p.Owner); err != nil {
+			return err
+		}
+	}
+	if p.Compose != nil {
+		if p.Kind != KindDocker {
+			return fmt.Errorf("compose needs a docker project (kind docker), not %q", p.Kind)
+		}
+		if err := p.Compose.Validate(); err != nil {
 			return err
 		}
 	}
