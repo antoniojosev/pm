@@ -19,6 +19,7 @@ import (
 	"github.com/antoniojosev/pm/internal/config"
 	"github.com/antoniojosev/pm/internal/detector"
 	"github.com/antoniojosev/pm/internal/registry"
+	"github.com/antoniojosev/pm/internal/version"
 )
 
 // newTestDaemon serves the API mux (no SPA, no MCP, no proxy loop) against a
@@ -458,4 +459,26 @@ func freePort(t *testing.T) (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	_, srv := newTestDaemon(t) // PATH is empty: no caddy, docker or systemctl
+	code, obj, raw := do(t, srv, "GET", "/api/v1/version", "")
+	if code != 200 {
+		t.Fatalf("version = %d %s", code, raw)
+	}
+	if obj["version"] != version.Version || obj["api"] != float64(1) {
+		t.Fatalf("version = %v", obj)
+	}
+	for _, k := range []string{"caddy", "docker", "systemd"} {
+		if v, ok := obj[k].(bool); !ok || v {
+			t.Errorf("%s = %v, want false with an empty PATH", k, obj[k])
+		}
+	}
+	assertConforms(t, "GET", "/version", raw)
+
+	// the deprecated alias answers too
+	if code, _, _ := do(t, srv, "GET", "/api/version", ""); code != 200 {
+		t.Fatalf("/api/version = %d", code)
+	}
 }

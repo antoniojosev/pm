@@ -44,6 +44,21 @@ paths:
                 required: [status]
                 properties:
                   status: {type: string, example: ok}
+  /version:
+    get:
+      tags: [system]
+      operationId: version
+      summary: Version, API generation and host capabilities
+      description: |
+        Lets a client check it speaks the same API generation before using
+        anything else, and decide what it can ask for. The capability flags
+        are probed on every call.
+      responses:
+        "200":
+          description: Build identity and capabilities.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Version"}
   /ps:
     get:
       tags: [processes]
@@ -423,6 +438,18 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/LaunchResult"}
   schemas:
+    Version:
+      type: object
+      required: [version, api, caddy, docker, systemd]
+      properties:
+        version: {type: string, example: "0.2.0", description: "pm release that is serving."}
+        api:
+          type: integer
+          example: 1
+          description: API generation. A client built for generation N must refuse any other value.
+        caddy: {type: boolean, description: "The caddy binary is on PATH, so <name>.localhost routing works."}
+        docker: {type: boolean, description: "The docker daemon answers (`docker version` succeeds), so docker projects can start."}
+        systemd: {type: boolean, description: "The systemd --user manager is running (or degraded), so pm can launch units."}
     Error:
       type: object
       required: [error]
