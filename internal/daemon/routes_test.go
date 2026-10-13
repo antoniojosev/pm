@@ -268,13 +268,13 @@ func TestSyncProxyRetriesAFailedReload(t *testing.T) {
 		t.Fatalf("POST /routes = %d %s", code, raw)
 	}
 	failed := d.SyncProxy(last)
-	if failed != last {
-		t.Fatal("a failed reload was taken as done")
+	if failed == last || failed != "" {
+		t.Fatalf("a failed reload was taken as done: %q", failed)
 	}
 	if reloads() != 2 {
 		t.Fatalf("caddy calls = %d, want the failed reload", reloads())
 	}
-	if d.SyncProxy(failed) != failed || reloads() != 3 {
+	if d.SyncProxy(failed) != "" || reloads() != 3 {
 		t.Fatalf("the next round did not retry (%d calls)", reloads())
 	}
 
@@ -289,6 +289,40 @@ func TestSyncProxyRetriesAFailedReload(t *testing.T) {
 	// now it is in force: nothing more to do
 	if d.SyncProxy(last) != last || reloads() != 4 {
 		t.Fatalf("an applied sync reloaded again (%d calls)", reloads())
+	}
+}
+
+// A route removed while Caddy is down must not survive in the Caddyfile: the
+// file written by the failed round holds it, and pm-proxy reads that file when
+// it starts again.
+func TestSyncProxyDropsARouteRemovedDuringAnOutage(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	failed := d.SyncProxy(last)
+	if !strings.Contains(caddyfile(t, d), "9810") {
+		t.Fatalf("the failed round should have written the route:\n%s", caddyfile(t, d))
+	}
+	if code, raw := doStatus(t, srv, "DELETE", "/api/v1/routes/x.localhost", ""); code != 204 {
+		t.Fatalf("DELETE /routes = %d %s", code, raw)
+	}
+
+	sd.FixCaddy(t)
+	now := d.SyncProxy(failed)
+	if strings.Contains(caddyfile(t, d), "9810") {
+		t.Fatalf("the removed route is still in the Caddyfile:\n%s", caddyfile(t, d))
+	}
+	if now == "" || now == failed {
+		t.Fatalf("the recovery round was not taken as applied: %q", now)
+	}
+	if d.SyncProxy(now) != now {
+		t.Fatal("an applied sync was repeated")
 	}
 }
 

@@ -1100,7 +1100,7 @@ components:
         pid: {type: integer}
         unit: {type: string}
         group: {type: string}
-        owner: {type: string, description: 'Who the process belongs to: the owner of a run (`POST /run`) or of a registered project, or, for an unclaimed process, the `PM_OWNER` marker the daemon found in its environment (when it is a valid owner name).'}
+        owner: {type: string, description: 'Who the process belongs to: the owner of a run (`POST /run`) or of a registered project, or, for an unclaimed process, the `PM_OWNER` marker the daemon found in the environment of that process (when it is a valid owner name).'}
         cmd: {type: string}
         cwd: {type: string}
         docker: {type: boolean}

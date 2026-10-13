@@ -32,10 +32,12 @@ existed changes.
 
 - **Caddy reload is retried.** The daemon used to take a failed `caddy reload`
   as done, so a route added while Caddy was down stayed unserved until another
-  route changed. A failed write or reload is now logged and tried again on the
-  next round (every 3 seconds).
-- `pm down --owner --keep-leases` now says in its flag help that it keeps the
-  owner's routes as well as its leases.
+  route changed. A failed write or reload is now tried again on the next round
+  (every 3 seconds), rewriting the Caddyfile from the routes of that moment, so
+  a route removed during the outage does not linger in the file `pm-proxy`
+  reads at start. The failure is logged once, not every round.
+- `pm down --owner --keep-leases` and the MCP tool `pm_owner_down` now say that
+  they keep the owner's routes as well as its leases.
 - `openapi.yaml` documents the 400 of `DELETE /routes/{host}` and says that
   `Row.owner` also comes from the `PM_OWNER` marker the daemon reads from an
   unclaimed process.

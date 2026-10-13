@@ -150,8 +150,8 @@ type Row struct {
 	Unit    string `json:"unit,omitempty"`
 	Group   string `json:"group,omitempty"`
 	// Owner is who the process is for: set for a Run and for an unclaimed
-	// process that carries a PM_OWNER marker, which the daemon reads from its
-	// environment.
+	// process that carries a PM_OWNER marker, which the daemon reads from that
+	// process's environment.
 	Owner  string `json:"owner,omitempty"`
 	Cmd    string `json:"cmd,omitempty"`
 	Cwd    string `json:"cwd,omitempty"`
