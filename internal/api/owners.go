@@ -55,9 +55,10 @@ func (s *Service) StopOwner(owner string) (OwnerResult, error) {
 }
 
 // DeleteOwner stops everything that belongs to owner and then releases its
-// leases: afterwards `pm ps` and `pm lease ls` show nothing of it. Registered
+// leases and removes its explicit routes: afterwards `pm ps`, `pm lease ls`
+// and `pm route ls` show nothing of it. Registered
 // projects that name the owner stay in the catalog, stopped, as after pm stop.
-// If something could not be stopped the leases are kept (its ports may still
+// If something could not be stopped the leases and routes are kept (its ports may still
 // be in use) and the error says so: DeleteOwner can be repeated.
 func (s *Service) DeleteOwner(owner string) (OwnerResult, error) {
 	res, err := s.stopOwner(owner)
@@ -77,7 +78,17 @@ func (s *Service) DeleteOwner(owner string) (OwnerResult, error) {
 		s.publishOwner(EventOwnerStopped, res)
 		return res, rerr
 	}
-	if len(res.Stopped) > 0 || len(res.LeasesReleased) > 0 {
+	// Its explicit routes go with it: they name ports that belonged to it.
+	routes, routeErr := s.Store.RemoveOwnerRoutes(owner)
+	if len(routes) > 0 {
+		s.routeNotify.broadcast()
+	}
+	if routeErr != nil {
+		res.Errors = append(res.Errors, "remove routes: "+routeErr.Error())
+		s.publishOwner(EventOwnerStopped, res)
+		return res, routeErr
+	}
+	if len(res.Stopped) > 0 || len(res.LeasesReleased) > 0 || len(routes) > 0 {
 		s.publishOwner(EventOwnerDeleted, res)
 	}
 	return res, nil

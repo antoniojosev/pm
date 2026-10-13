@@ -91,28 +91,11 @@ func (d *Daemon) reconcileProxy(ctx context.Context) {
 	if os.Getenv("PM_NO_PROXY") == "1" {
 		return // don't manage Caddy (useful for a secondary daemon / tests)
 	}
-	paths := d.svc.Paths
 	var last string
 	tick := time.NewTicker(3 * time.Second)
 	defer tick.Stop()
 	for {
-		rows, err := d.svc.PS()
-		if err == nil {
-			var routes []proxy.Route
-			for _, r := range rows {
-				if r.Status == "up" && r.Port != 0 && r.Name != "?" {
-					host := hostFor(d.svc, r.Name)
-					routes = append(routes, proxy.Route{Host: host, Port: r.Port})
-				}
-			}
-			content := proxy.Generate(routes, d.port)
-			if content != last {
-				if err := proxy.Write(paths.Caddyfile, routes, d.port); err == nil {
-					_ = proxy.Reload(paths.Caddyfile)
-					last = content
-				}
-			}
-		}
+		last = d.SyncProxy(last)
 		select {
 		case <-ctx.Done():
 			return
@@ -121,11 +104,30 @@ func (d *Daemon) reconcileProxy(ctx context.Context) {
 	}
 }
 
-func hostFor(svc *api.Service, name string) string {
-	if p, ok := svc.Get(name); ok {
-		return p.Hostname()
+// SyncProxy is one round of the reconciliation: it renders the Caddyfile from
+// every route (those declared with `pm route add` and those derived from
+// running projects, the explicit one winning on a shared host), and when the
+// text differs from last it writes the file and reloads Caddy. It returns the
+// text now in force, to pass to the next call; on a failure that is last, so
+// the next round tries again.
+func (d *Daemon) SyncProxy(last string) string {
+	routes, err := d.svc.Routes()
+	if err != nil {
+		return last
 	}
-	return name + ".localhost"
+	pr := make([]proxy.Route, 0, len(routes))
+	for _, r := range routes {
+		pr = append(pr, proxy.Route{Host: r.Host, Port: r.Port})
+	}
+	content := proxy.Generate(pr, d.port)
+	if content == last {
+		return last
+	}
+	if err := proxy.Write(d.svc.Paths.Caddyfile, pr, d.port); err != nil {
+		return last
+	}
+	_ = proxy.Reload(d.svc.Paths.Caddyfile)
+	return content
 }
 
 // spaHandler serves the embedded SPA with index.html fallback for client routes.

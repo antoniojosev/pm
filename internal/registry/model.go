@@ -254,4 +254,5 @@ type State struct {
 	Projects []Project `json:"projects"`
 	Groups   []Group   `json:"groups"`
 	Leases   []Lease   `json:"leases,omitempty"`
+	Routes   []Route   `json:"routes,omitempty"`
 }

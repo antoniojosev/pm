@@ -100,6 +100,29 @@ func register(s *server.MCPServer, svc *api.Service) {
 			return jsonResult(res, nil)
 		})
 
+	s.AddTool(mcp.NewTool("pm_route_add",
+		mcp.WithDescription("Publish <host>.localhost for a port pm did not start, so Caddy sends it to 127.0.0.1:<port> (a tunnel, a container, a service pm does not manage). It is saved even without Caddy. An explicit route wins over the one derived from a project with the same host. Repeating the call with the same port is fine; a host already routed to another port is an error: pm_route_rm it first. Returns {host, port, owner}."),
+		mcp.WithString("host", mcp.Required(), mcp.Description("the name, <name>.localhost (lowercase letters, digits and '-' per label); pm.localhost is the dashboard's")),
+		mcp.WithNumber("port", mcp.Required(), mcp.Description("the port it answers on, 1 to 65535")),
+		mcp.WithString("owner", mcp.Description("who the route is for (optional); deleting the owner (pm_owner_down) removes the route"))),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			route, err := svc.AddRoute(registry.Route{
+				Host:  req.GetString("host", ""),
+				Port:  req.GetInt("port", 0),
+				Owner: req.GetString("owner", ""),
+			})
+			return jsonResult(route, err)
+		})
+
+	s.AddTool(mcp.NewTool("pm_route_rm",
+		mcp.WithDescription("Remove an explicit route added with pm_route_add. A host that is only a project's own name is not one: it goes away when the project stops."),
+		mcp.WithString("host", mcp.Required(), mcp.Description("the route's host, <name>.localhost"))),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			host := req.GetString("host", "")
+			_, err := svc.RemoveRoute(host)
+			return textResult("removed "+host, err)
+		})
+
 	s.AddTool(mcp.NewTool("pm_restart",
 		mcp.WithDescription("Restart a project."),
 		mcp.WithString("name", mcp.Required())),

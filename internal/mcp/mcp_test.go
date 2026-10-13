@@ -141,7 +141,7 @@ func (c *mcpClient) call(tool, args string) (text string, isError bool) {
 func TestToolsAreAdvertised(t *testing.T) {
 	c := newMCPClient(t)
 	raw := c.rpc("tools/list", `{}`)
-	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down", "pm_run", "pm_owner_down"} {
+	for _, tool := range []string{"pm_list", "pm_start", "pm_stop", "pm_restart", "pm_promote", "pm_demote", "pm_register", "pm_remove", "pm_claim", "pm_scan", "pm_logs", "pm_group_up", "pm_group_down", "pm_run", "pm_owner_down", "pm_route_add", "pm_route_rm"} {
 		if !strings.Contains(raw, `"name":"`+tool+`"`) {
 			t.Errorf("tool %s not advertised", tool)
 		}
@@ -350,5 +350,33 @@ func TestPmOwnerDownReportsPartialFailures(t *testing.T) {
 	out, isErr := c.call("pm_owner_down", `{"owner":"wt-qa"}`)
 	if !isErr || !strings.Contains(out, "leases were kept") || !strings.Contains(out, `"errors"`) {
 		t.Fatalf("pm_owner_down = %v %s", isErr, out)
+	}
+}
+
+func TestRouteTools(t *testing.T) {
+	c := newMCPClient(t)
+
+	out, isErr := c.call("pm_route_add", `{"host":"Crb-144.localhost","port":9810,"owner":"wt-qa"}`)
+	var route registry.Route
+	if isErr || json.Unmarshal([]byte(out), &route) != nil || route != (registry.Route{Host: "crb-144.localhost", Port: 9810, Owner: "wt-qa"}) {
+		t.Fatalf("pm_route_add = %v %s", isErr, out)
+	}
+	if out, isErr := c.call("pm_route_add", `{"host":"crb-144.localhost","port":9810}`); isErr {
+		t.Fatalf("repeating pm_route_add = %s", out)
+	}
+	if out, isErr := c.call("pm_route_add", `{"host":"crb-144.localhost","port":9811}`); !isErr || !strings.Contains(out, "9810") {
+		t.Fatalf("a host routed elsewhere = %v %s", isErr, out)
+	}
+	for _, args := range []string{`{"host":"x.example.com","port":1}`, `{"host":"x.localhost"}`, `{"port":1}`, `{"host":"x.localhost","port":1,"owner":"a b"}`} {
+		if out, isErr := c.call("pm_route_add", args); !isErr {
+			t.Errorf("pm_route_add %s = %s, want an error", args, out)
+		}
+	}
+
+	if out, isErr := c.call("pm_route_rm", `{"host":"crb-144.localhost"}`); isErr || !strings.Contains(out, "crb-144.localhost") {
+		t.Fatalf("pm_route_rm = %v %s", isErr, out)
+	}
+	if out, isErr := c.call("pm_route_rm", `{"host":"crb-144.localhost"}`); !isErr || !strings.Contains(out, "no explicit route") {
+		t.Fatalf("pm_route_rm twice = %v %s", isErr, out)
 	}
 }

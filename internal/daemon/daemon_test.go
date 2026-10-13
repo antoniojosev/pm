@@ -392,11 +392,11 @@ func TestHelpers(t *testing.T) {
 
 	d, _ := newTestDaemon(t)
 	_ = d.svc.Add(registry.Project{Name: "web", Host: "My Front"})
-	if got := hostFor(d.svc, "web"); got != "my-front.localhost" {
-		t.Errorf("hostFor(registered) = %q", got)
+	if got := d.svc.HostFor("web"); got != "my-front.localhost" {
+		t.Errorf("HostFor(registered) = %q", got)
 	}
-	if got := hostFor(d.svc, "ghost"); got != "ghost.localhost" {
-		t.Errorf("hostFor(unknown) = %q", got)
+	if got := d.svc.HostFor("ghost"); got != "ghost.localhost" {
+		t.Errorf("HostFor(unknown) = %q", got)
 	}
 }
 

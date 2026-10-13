@@ -48,24 +48,24 @@ func resolve(t *testing.T, spec map[string]any, node map[string]any) map[string]
 	}
 }
 
-// responseSchema returns the application/json schema documented for the 200
-// response of "method path".
-func responseSchema(t *testing.T, spec map[string]any, method, path string) map[string]any {
+// responseSchemaFor returns the application/json schema documented for the
+// response with status code of "method path".
+func responseSchemaFor(t *testing.T, spec map[string]any, method, path, code string) map[string]any {
 	t.Helper()
 	paths, _ := spec["paths"].(map[string]any)
 	item, _ := paths[path].(map[string]any)
 	op, _ := item[strings.ToLower(method)].(map[string]any)
 	resps, _ := op["responses"].(map[string]any)
-	r200, _ := resps["200"].(map[string]any)
+	r200, _ := resps[code].(map[string]any)
 	if r200 == nil {
-		t.Fatalf("%s %s documents no 200 response", method, path)
+		t.Fatalf("%s %s documents no %s response", method, path, code)
 	}
 	r200 = resolve(t, spec, r200)
 	content, _ := r200["content"].(map[string]any)
 	js, _ := content["application/json"].(map[string]any)
 	schema, _ := js["schema"].(map[string]any)
 	if schema == nil {
-		t.Fatalf("%s %s 200 has no application/json schema", method, path)
+		t.Fatalf("%s %s %s has no application/json schema", method, path, code)
 	}
 	return schema
 }
@@ -143,12 +143,18 @@ func validate(t *testing.T, spec map[string]any, schema map[string]any, v any, a
 // OpenAPI file documents for method+docPath.
 func assertConforms(t *testing.T, method, docPath, raw string) {
 	t.Helper()
+	assertConformsStatus(t, method, docPath, "200", raw)
+}
+
+// assertConformsStatus is assertConforms for the response documented under code.
+func assertConformsStatus(t *testing.T, method, docPath, code, raw string) {
+	t.Helper()
 	spec := loadSpec(t)
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
 		t.Fatalf("%s %s: not JSON: %v (%s)", method, docPath, err, raw)
 	}
-	for _, e := range validate(t, spec, responseSchema(t, spec, method, docPath), v, "$") {
+	for _, e := range validate(t, spec, responseSchemaFor(t, spec, method, docPath, code), v, "$") {
 		t.Errorf("%s %s response %s violates openapi.yaml: %s", method, docPath, raw, e)
 	}
 }

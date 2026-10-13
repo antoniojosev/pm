@@ -55,6 +55,12 @@ esac
 exit 0
 `
 
+const caddyScript = `#!/bin/sh
+state="$PM_FAKE_STATE"
+{ echo "caddy"; for a in "$@"; do echo "$a"; done; echo "--end--"; } >> "$state/calls"
+exit 0
+`
+
 const systemctlScript = `#!/bin/sh
 state="$PM_FAKE_STATE"
 [ "$1" = "--user" ] && shift
@@ -172,8 +178,18 @@ func (s *Systemd) DockerPS(t *testing.T, containers ...Container) {
 	}
 }
 
+// Caddy installs a fake caddy on PATH that records every call and succeeds, so
+// that the proxy's reload can be seen without a real Caddy: Calls("caddy").
+// Until it is called there is no caddy on PATH at all.
+func (s *Systemd) Caddy(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.bin, "caddy"), []byte(caddyScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Calls returns the argv of every recorded call to name ("systemd-run",
-// "systemctl" or "docker"; for systemctl the verb is the first element).
+// "systemctl", "docker" or "caddy"; for systemctl the verb is the first element).
 func (s *Systemd) Calls(name string) [][]string {
 	raw, err := os.ReadFile(filepath.Join(s.state, "calls"))
 	if err != nil {

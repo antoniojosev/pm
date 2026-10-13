@@ -44,12 +44,13 @@ pm ps                  list running projects (add -a to include stopped)
 pm start|stop|restart <name>   start accepts --mem 512M --cpu 150%
 pm promote|demote <name>       ephemeral ↔ permanent service
 pm up|down <group>             bring a group up/down
-pm down --owner <o>            stop everything that belongs to an owner (its projects, runs, and any process with PM_OWNER=<o>) and release its leases; --keep-leases keeps them
+pm down --owner <o>            stop everything that belongs to an owner (its projects, runs, and any process with PM_OWNER=<o>) and release its leases and routes; --keep-leases keeps both
 pm add|edit|rm <name>          registry CRUD
 pm claim <port>                adopt an 'unmanaged' listener
 pm scan                        discover projects under the roots (PM_ROOTS)
 pm listen                      ports on the machine that pm doesn't manage
 pm lease [n] --owner <o>       reserve n ports for an owner before starting anything (ls, release <id>)
+pm route add <host> <port>     publish <name>.localhost for a port pm did not start, optional --owner (ls, rm <host>); an explicit route wins over a project's own name
 pm logs <name> [-f]            logs (stream with -f)
 pm open <name> | pm ui         open in the browser
 pm serve                       start the daemon (API + web + SSE + MCP)
