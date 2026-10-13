@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,6 +60,9 @@ func (d *Daemon) apiRoutes() []Route {
 		{"DELETE", "/leases/{id}", d.hReleaseLease},
 		{"POST", "/owners/{owner}/stop", d.hOwnerStop},
 		{"DELETE", "/owners/{owner}", d.hOwnerDelete},
+		{"POST", "/routes", d.hAddRoute},
+		{"GET", "/routes", d.hRoutes},
+		{"DELETE", "/routes/{host}", d.hRemoveRoute},
 		{"GET", "/events", d.hEvents},
 		{"GET", "/logs/stream", d.hLogStream},
 		{"POST", "/instances/{port}/stop", d.hInstanceStop},
@@ -359,6 +363,60 @@ func (d *Daemon) hReleaseLease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ok())
 }
 
+// hAddRoute publishes a host for a port pm did not start. The body is as strict
+// as POST /run's: an unknown field is an error, so a misspelt `owner` does not
+// leave a route that deleting the owner would not remove.
+func (d *Daemon) hAddRoute(w http.ResponseWriter, r *http.Request) {
+	var req registry.Route
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	route, err := d.svc.AddRoute(req)
+	if err != nil {
+		writeRouteErr(w, err)
+		return
+	}
+	writeJSON(w, 201, route)
+}
+
+// hRoutes lists every route served, explicit and derived from projects.
+func (d *Daemon) hRoutes(w http.ResponseWriter, _ *http.Request) {
+	routes, err := d.svc.Routes()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if routes == nil {
+		routes = []api.RouteInfo{}
+	}
+	writeJSON(w, 200, routes)
+}
+
+// hRemoveRoute deletes an explicit route. A success has no body.
+func (d *Daemon) hRemoveRoute(w http.ResponseWriter, r *http.Request) {
+	if _, err := d.svc.RemoveRoute(r.PathValue("host")); err != nil {
+		writeRouteErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeRouteErr answers a route failure: 409 for a host that already routes
+// elsewhere, 404 for a host with no explicit route, the usual 400 otherwise.
+func writeRouteErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, registry.ErrRouteConflict):
+		writeJSON(w, 409, map[string]string{"error": err.Error()})
+	case errors.Is(err, registry.ErrRouteNotFound):
+		writeJSON(w, 404, map[string]string{"error": err.Error()})
+	default:
+		writeErr(w, err)
+	}
+}
+
 // hOwnerStop stops everything that belongs to an owner and keeps its leases.
 func (d *Daemon) hOwnerStop(w http.ResponseWriter, r *http.Request) {
 	res, err := d.svc.StopOwner(r.PathValue("owner"))
@@ -392,7 +450,9 @@ func writeOwnerResult(w http.ResponseWriter, res api.OwnerResult, err error) {
 // CLI) does. A client sees only the leases that change after it connected;
 // GET /leases gives the starting point. `owner.stopped` and `owner.deleted`
 // carry the owner result, as soon as the daemon (API or MCP) stops or deletes
-// an owner; the CLI, a separate process, does not publish them.
+// an owner; the CLI, a separate process, does not publish them. `route.created`
+// and `route.deleted` carry an explicit route, like the lease events: at once
+// when the daemon changes it, within one tick when the CLI does.
 func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -406,9 +466,11 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	// Take the wake-up channel before the baseline so a change in between is
 	// not lost: it either shows in the baseline or closes the channel.
 	wake := d.svc.LeaseChanged()
+	routeWake := d.svc.RouteChanged()
 	ownerEvents, cancelOwner := d.svc.SubscribeOwnerEvents()
 	defer cancelOwner()
 	known := leasesByID(d.svc.Leases(""))
+	knownRoutes := routesByHost(d.svc.ExplicitRoutes())
 
 	send := func() {
 		rows, err := d.svc.PS()
@@ -430,6 +492,15 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		known = current
 		flusher.Flush()
 	}
+	sendRouteChanges := func() {
+		current := routesByHost(d.svc.ExplicitRoutes())
+		for _, ev := range diffExplicitRoutes(knownRoutes, current) {
+			b, _ := json.Marshal(ev.Route)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, b)
+		}
+		knownRoutes = current
+		flusher.Flush()
+	}
 	send()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -440,6 +511,9 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		case <-wake:
 			wake = d.svc.LeaseChanged()
 			sendLeaseChanges()
+		case <-routeWake:
+			routeWake = d.svc.RouteChanged()
+			sendRouteChanges()
 		case ev := <-ownerEvents:
 			b, _ := json.Marshal(ev.Result)
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, b)
@@ -447,6 +521,7 @@ func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			send()
 			sendLeaseChanges()
+			sendRouteChanges()
 		}
 	}
 }
@@ -489,6 +564,47 @@ func sortedIDs(m map[string]registry.Lease) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// routeEvent is one change between two route sets.
+type routeEvent struct {
+	Name  string // route.created | route.deleted
+	Route registry.Route
+}
+
+func routesByHost(rs []registry.Route) map[string]registry.Route {
+	out := make(map[string]registry.Route, len(rs))
+	for _, r := range rs {
+		out[r.Host] = r
+	}
+	return out
+}
+
+// diffExplicitRoutes lists what changed from prev to cur, in host order so the stream
+// is deterministic: removals first, so a host that changed port reads as the
+// old route going and the new one arriving.
+func diffExplicitRoutes(prev, cur map[string]registry.Route) []routeEvent {
+	var evs []routeEvent
+	for _, host := range sortedHosts(prev) {
+		if now, has := cur[host]; !has || now.Port != prev[host].Port {
+			evs = append(evs, routeEvent{"route.deleted", prev[host]})
+		}
+	}
+	for _, host := range sortedHosts(cur) {
+		if was, had := prev[host]; !had || was.Port != cur[host].Port {
+			evs = append(evs, routeEvent{"route.created", cur[host]})
+		}
+	}
+	return evs
+}
+
+func sortedHosts(m map[string]registry.Route) []string {
+	hosts := make([]string, 0, len(m))
+	for h := range m {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	return hosts
 }
 
 // hLogStream tails a project's log file over SSE.

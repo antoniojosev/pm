@@ -616,12 +616,13 @@ func downCmd() *cobra.Command {
 		Long: `Stops every project of a group, or, with --owner, everything that belongs to an
 owner: its projects, the processes it started with 'pm run' (they are forgotten
 once stopped) and any process that carries PM_OWNER=<owner> in its environment,
-say one a script left running. The owner's port leases are released too, so
-nothing of it is left in 'pm ls' or 'pm lease ls'; --keep-leases keeps them.
+say one a script left running. The owner's port leases are released and its
+routes ('pm route add --owner') removed too, so nothing of it is left in 'pm ls',
+'pm lease ls' or 'pm route ls'; --keep-leases keeps leases and routes.
 
 Registered projects that name the owner stay in the catalog, stopped, as after
-'pm stop'. If something cannot be stopped the rest still is, the leases are
-kept and the command fails.
+'pm stop'. If something cannot be stopped the rest still is, the leases and
+routes are kept and the command fails.
 
 Examples:
   pm down web-stack             stop the projects of a group

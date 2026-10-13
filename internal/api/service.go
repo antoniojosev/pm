@@ -29,6 +29,7 @@ type Service struct {
 	PortFree func(port int) bool
 
 	leaseNotify notifier
+	routeNotify notifier
 	ownerHub    ownerHub
 }
 

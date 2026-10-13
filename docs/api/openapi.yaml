@@ -12,7 +12,9 @@ info:
     2026-10-12) and `Link: <...>; rel="successor-version"` headers.
 
     Errors are `{"error": "<message>"}` with HTTP 400 (the daemon does not
-    distinguish error classes yet).
+    distinguish error classes yet), except in the routes endpoints, which also
+    answer 409 (a host already routed to another port) and 404 (no explicit
+    route for a host).
 
     This file is the contract. `TestRoutesMatchOpenAPI` (internal/daemon) fails
     when a route is added or removed in code without updating it, and the
@@ -27,6 +29,7 @@ tags:
   - name: processes
   - name: groups
   - name: leases
+  - name: routes
   - name: owners
   - name: discovery
   - name: streams
@@ -404,6 +407,84 @@ paths:
       responses:
         "200": {$ref: "#/components/responses/OK"}
         "400": {$ref: "#/components/responses/Error"}
+  /routes:
+    get:
+      tags: [routes]
+      operationId: listRoutes
+      summary: List the routes Caddy serves
+      description: |
+        Every `<name>.localhost` the proxy answers, sorted by host: the
+        explicit routes (`source: explicit`, declared with `POST /routes`) and
+        one per running project (`source: project`, derived from the
+        project's own host). When both name the same host only the explicit
+        one is listed: it wins. An empty array when there are none.
+
+        Routes are saved and listed with or without Caddy; `GET /version`
+        says `caddy: false` when nothing will serve them.
+      responses:
+        "200":
+          description: Routes, by host.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/RouteInfo"}
+        "400": {$ref: "#/components/responses/Error"}
+    post:
+      tags: [routes]
+      operationId: addRoute
+      summary: Publish a host for a port pm did not start
+      description: |
+        Saves an explicit route in the registry: Caddy sends `host` to
+        `127.0.0.1:<port>`. It persists until `DELETE /routes/{host}` (or the
+        deletion of its owner) and is applied with the routes derived from
+        projects, in the same proxy round (a few seconds). It does not start
+        or check anything: the port need not be listening.
+
+        An explicit route wins over the one derived from a project with the
+        same host. Repeating the call with the same host and port is fine and
+        answers 201 again; a non-empty `owner` replaces the previous one. A
+        host that already routes to a different port is a 409: delete it
+        first. Unknown fields are a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RouteRequest"}
+      responses:
+        "201":
+          description: The route as stored (host lowercased).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Route"}
+        "400": {$ref: "#/components/responses/Error"}
+        "409":
+          description: The host already routes to another port.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /routes/{host}:
+    parameters:
+      - name: host
+        in: path
+        required: true
+        description: 'The route''s host, `<name>.localhost`. Matched case-insensitively.'
+        schema: {type: string, example: crb-144.localhost}
+    delete:
+      tags: [routes]
+      operationId: removeRoute
+      summary: Remove an explicit route
+      description: |
+        Only explicit routes can be removed. The one derived from a project
+        goes away when the project stops, and asking for its host is a 404,
+        like asking for a host with no route at all.
+      responses:
+        "204": {description: Removed. No body.}
+        "404":
+          description: No explicit route has this host.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
   /owners/{owner}/stop:
     parameters:
       - {$ref: "#/components/parameters/OwnerPath"}
@@ -440,11 +521,12 @@ paths:
       summary: Stop everything that belongs to an owner and release its leases
       description: |
         Does what `POST /owners/{owner}/stop` does and then releases every
-        lease of the owner, so that afterwards `/ps` and `/leases` show no
-        trace of it. Registered projects (not runs) that name the owner stay in
+        lease of the owner and removes its explicit routes (`POST /routes`
+        with that `owner`), so that afterwards `/ps`, `/leases` and `/routes`
+        show no trace of it. Registered projects (not runs) that name the owner stay in
         the catalog, stopped, exactly as after `POST /projects/{name}/stop`.
 
-        The leases are released only when everything was stopped: if
+        The leases and routes are released only when everything was stopped: if
         something could not be, the answer is a 400 as for the stop and the
         leases are kept (that process may still hold their ports). The call can
         be repeated. An owner with nothing is not an error.
@@ -471,14 +553,19 @@ paths:
         - `lease.created`: a lease was taken; `data` is the `Lease`.
         - `lease.released`: a lease was released; `data` is the `Lease` as it
           was.
+        - `route.created`: an explicit route was added; `data` is the `Route`.
+        - `route.deleted`: an explicit route was removed, by `DELETE /routes/{host}`
+          or by deleting its owner; `data` is the `Route` as it was.
         - `owner.stopped`: an owner was stopped (`POST /owners/{owner}/stop`,
           or a `DELETE` that could not finish); `data` is the `OwnerResult`.
         - `owner.deleted`: an owner was stopped and its leases released
           (`DELETE /owners/{owner}`); `data` is the `OwnerResult`. Each
-          released lease also arrives as its own `lease.released`.
+          released lease also arrives as its own `lease.released`, each
+          removed route as `route.deleted`.
 
-        A lease change made through the daemon is sent at once; one made by
-        another process (the `pm lease` CLI) within 2 seconds. Only changes
+        A lease or route change made through the daemon is sent at once; one
+        made by another process (the `pm lease` and `pm route` CLI) within 2
+        seconds. Routes derived from projects produce no events. Only changes
         after the client connected are sent: read `GET /leases` for the
         starting point.
 
@@ -753,6 +840,45 @@ components:
           type: array
           description: One message per thing that could not be stopped. Present only in a 400 body.
           items: {type: string}
+    RouteRequest:
+      type: object
+      description: Body of `POST /routes`.
+      required: [host, port]
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          example: crb-144.localhost
+          description: '`<name>.localhost`: DNS labels of letters, digits and `-`, ending in `.localhost`. `pm.localhost` is the dashboard''s and cannot be used. Stored lowercase.'
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          description: Where it answers, on 127.0.0.1.
+        owner:
+          type: string
+          example: wt-qa
+          description: 'Optional. Same grammar as a lease owner. Deleting the owner (`DELETE /owners/{owner}`) removes the route.'
+    Route:
+      type: object
+      description: An explicit route as stored.
+      required: [host, port, owner]
+      properties:
+        host: {type: string, example: crb-144.localhost}
+        port: {type: integer, example: 9810}
+        owner: {type: string, example: wt-qa, description: 'Empty when the route has no owner.'}
+    RouteInfo:
+      type: object
+      description: A route Caddy serves, with where it comes from.
+      required: [host, port, owner, source]
+      properties:
+        host: {type: string, example: crb-144.localhost}
+        port: {type: integer, example: 9810}
+        owner: {type: string, example: wt-qa, description: 'Empty for an explicit route without owner and for a project without one.'}
+        source:
+          type: string
+          enum: [explicit, project]
+          description: '`explicit`: declared with `POST /routes`. `project`: derived from a running project.'
     Lease:
       type: object
       required: [id, owner, ports, created_at]
