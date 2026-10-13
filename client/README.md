@@ -13,10 +13,13 @@ binary. The API it speaks is documented in [`docs/api/openapi.yaml`](../docs/api
     unit, _ := c.Run(ctx, client.RunSpec{Name: "api-qa", Dir: dir, Cmd: cmd,
         Owner: "wt-qa", Ports: lease.Ports, Limits: client.Limits{Memory: "2G"}})
     logs, _ := c.Logs(ctx, "api-qa", 50)
+    rows, _ := c.PS(ctx) // every project, run and listener, with its owner
+    c.Routes.Add(ctx, client.RouteRequest{Host: "api-qa.localhost", Port: lease.Ports[0], Owner: "wt-qa"})
     c.Owners.Delete(ctx, "wt-qa") // stops api-qa and releases the lease
 
-Calls: `Version`, `Leases.Create/List/Delete`, `Run`, `Stop`, `Logs`,
-`Owners.Stop/Delete`.
+Calls: `Version`, `PS`, `Detect`, `Leases.Create/List/Delete`, `Run`, `Stop`,
+`Logs`, `Routes.Add/Remove/List`, `Owners.Stop/Delete`. `Owners.Delete` also
+removes the routes of its owner.
 
 **API version.** The client speaks API `client.APIVersion` (1). Before its first
 request it calls `Version`; a daemon that reports another generation, or has no

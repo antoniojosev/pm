@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -239,6 +240,9 @@ func TestTypesMatchTheDaemons(t *testing.T) {
 		{client.RunResult{}, runner.RunResult{}},
 		{client.Stopped{}, runner.Stopped{}},
 		{client.OwnerResult{}, api.OwnerResult{}},
+		{client.Row{}, api.Row{}},
+		{client.Route{}, registry.Route{}},
+		{client.RouteInfo{}, api.RouteInfo{}},
 	}
 	for _, p := range pairs {
 		ct, dt := reflect.TypeOf(p.client), reflect.TypeOf(p.daemon)
@@ -248,6 +252,43 @@ func TestTypesMatchTheDaemons(t *testing.T) {
 				t.Fatalf("client %s has fields %v, daemon %s has %v", ct.Name(), got, dt, want)
 			}
 		})
+	}
+}
+
+// TestRouteRequestAndDetectedMatchTheDaemons covers the two types that have no
+// daemon struct to compare with: the daemon decodes POST /routes into
+// registry.Route (the client only drops the empty owner), and builds the
+// /detect answer as a map, so its keys are read off a real answer.
+func TestRouteRequestAndDetectedMatchTheDaemons(t *testing.T) {
+	keys := func(m map[string]string) []string {
+		var out []string
+		for k := range m {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return out
+	}
+	if got, want := keys(jsonFields(reflect.TypeOf(client.RouteRequest{}))), keys(jsonFields(reflect.TypeOf(registry.Route{}))); !slices.Equal(got, want) {
+		t.Fatalf("RouteRequest has %v, the daemon reads %v", got, want)
+	}
+
+	srv, _ := contractServer(t, nil)
+	res, err := http.Get(srv.URL + "/api/v1/detect?path=" + t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for k := range raw {
+		got = append(got, k)
+	}
+	slices.Sort(got)
+	if want := keys(jsonFields(reflect.TypeOf(client.Detected{}))); !slices.Equal(got, want) {
+		t.Fatalf("the daemon answers %v, client.Detected has %v", got, want)
 	}
 }
 
@@ -308,5 +349,125 @@ func TestAnOldDaemonWithTheDashboardIsIncompatible(t *testing.T) {
 	}
 	if _, err := c.Leases.List(context.Background(), ""); !errors.Is(err, client.ErrIncompatible) {
 		t.Fatalf("Leases.List err = %v", err)
+	}
+}
+
+// TestPSAgainstTheDaemon: the picture of the machine, with the owner of what
+// Run started.
+func TestPSAgainstTheDaemon(t *testing.T) {
+	c, _ := contractEnv(t)
+	ctx := context.Background()
+
+	rows, err := c.PS(ctx)
+	if err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("PS on an empty machine = %#v, %v", rows, err)
+	}
+
+	lease, err := c.Leases.Create(ctx, client.LeaseRequest{Owner: "wt-qa", Prefer: 4600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := c.Run(ctx, client.RunSpec{Name: "api-qa", Dir: dir, Cmd: []string{"sleep", "100"}, Owner: "wt-qa", Ports: lease.Ports}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = c.PS(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *client.Row
+	for i := range rows {
+		if rows[i].Name == "api-qa" {
+			row = &rows[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("PS has no api-qa row: %+v", rows)
+	}
+	if row.Owner != "wt-qa" || row.Status != "up" || row.Unit != "pm-api-qa.service" || row.Port != lease.Ports[0] || row.Tier != "ephemeral" || row.Cmd != "sleep 100" {
+		t.Fatalf("row = %+v", *row)
+	}
+}
+
+// TestDetectAgainstTheDaemon: a recognised directory, an unrecognised one and
+// one that does not exist.
+func TestDetectAgainstTheDaemon(t *testing.T) {
+	c, _ := contractEnv(t)
+	ctx := context.Background()
+
+	goDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := c.Detect(ctx, goDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.OK || d.Stack != "go" || d.Kind != "native" || !slices.Equal(d.Cmd, []string{"go", "run", "."}) {
+		t.Fatalf("Detect go = %+v", d)
+	}
+
+	for _, dir := range []string{t.TempDir(), filepath.Join(t.TempDir(), "missing")} {
+		d, err := c.Detect(ctx, dir)
+		if err != nil || d.OK || d.Stack != "" || d.Cmd != nil || d.Kind != "" || d.PreferPort != 0 {
+			t.Fatalf("Detect %s = %+v, %v", dir, d, err)
+		}
+	}
+}
+
+// TestRoutesAgainstTheDaemon: add, repeat, clash, list with sources, remove,
+// and the routes that go with an owner.
+func TestRoutesAgainstTheDaemon(t *testing.T) {
+	c, _ := contractEnv(t)
+	ctx := context.Background()
+
+	if none, err := c.Routes.List(ctx); err != nil || none == nil || len(none) != 0 {
+		t.Fatalf("List on nothing = %#v, %v", none, err)
+	}
+
+	r, err := c.Routes.Add(ctx, client.RouteRequest{Host: "CRB-144.localhost", Port: 9810, Owner: "wt-qa"})
+	if err != nil || r != (client.Route{Host: "crb-144.localhost", Port: 9810, Owner: "wt-qa"}) {
+		t.Fatalf("Add = %+v, %v", r, err)
+	}
+	if again, err := c.Routes.Add(ctx, client.RouteRequest{Host: "crb-144.localhost", Port: 9810}); err != nil || again.Port != 9810 {
+		t.Fatalf("repeating Add = %+v, %v", again, err)
+	}
+	if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "free.localhost", Port: 9811}); err != nil {
+		t.Fatal(err)
+	}
+
+	var e *client.Error
+	if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "crb-144.localhost", Port: 9999}); !errors.As(err, &e) || e.Status != 409 {
+		t.Fatalf("clash: %v", err)
+	}
+	if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "nope.example.com", Port: 9812}); !errors.As(err, &e) || e.Status != 400 {
+		t.Fatalf("bad host: %v", err)
+	}
+	if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "zero.localhost"}); !errors.As(err, &e) || e.Status != 400 {
+		t.Fatalf("no port: %v", err)
+	}
+
+	list, err := c.Routes.List(ctx)
+	want := []client.RouteInfo{
+		{Host: "crb-144.localhost", Port: 9810, Owner: "wt-qa", Source: client.RouteExplicit},
+		{Host: "free.localhost", Port: 9811, Source: client.RouteExplicit},
+	}
+	if err != nil || !slices.Equal(list, want) {
+		t.Fatalf("List = %+v, %v", list, err)
+	}
+
+	if err := c.Routes.Remove(ctx, "free.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Routes.Remove(ctx, "free.localhost"); !errors.As(err, &e) || e.Status != 404 {
+		t.Fatalf("removing twice: %v", err)
+	}
+
+	// Deleting the owner takes its routes with it.
+	if _, err := c.Owners.Delete(ctx, "wt-qa"); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := c.Routes.List(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("routes left after Owners.Delete: %+v, %v", list, err)
 	}
 }

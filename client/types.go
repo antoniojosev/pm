@@ -126,3 +126,87 @@ type OwnerResult struct {
 	// Errors are the things that could not be stopped, one message each.
 	Errors []string `json:"errors,omitempty"`
 }
+
+// Row is one line of PS: a registered project, a process started with Run or
+// a listener nobody claims (Name "?").
+type Row struct {
+	// Name is the project or run; "?" for an unclaimed listener.
+	Name string `json:"name"`
+	Port int    `json:"port"`
+	// URL is http://<host>.localhost, through the proxy.
+	URL string `json:"url"`
+	// LocalURL is http://localhost:<port>, direct.
+	LocalURL string `json:"local_url,omitempty"`
+	Tier     string `json:"tier"`
+	// Status is "up", "down", "failed" or "unclaimed".
+	Status string `json:"status"`
+	// Failure says why a "failed" unit failed, as systemd reports it:
+	// "oom-kill", "exit-code", "signal"...
+	Failure string `json:"failure,omitempty"`
+	Kind    string `json:"kind"`
+	Stack   string `json:"stack,omitempty"`
+	Source  string `json:"source,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Unit    string `json:"unit,omitempty"`
+	Group   string `json:"group,omitempty"`
+	// Owner is who the process is for: set for a Run and for an unclaimed
+	// process that carries a PM_OWNER marker.
+	Owner  string `json:"owner,omitempty"`
+	Cmd    string `json:"cmd,omitempty"`
+	Cwd    string `json:"cwd,omitempty"`
+	Docker bool   `json:"docker,omitempty"`
+	Draft  bool   `json:"draft,omitempty"`
+	// System marks an unmanaged listener with no PID: a system or root
+	// process pm cannot manage.
+	System bool `json:"system,omitempty"`
+}
+
+// Detected is what Detect infers about a directory.
+type Detected struct {
+	// OK is false when nothing was recognised; the other fields are then empty.
+	OK    bool   `json:"ok"`
+	Stack string `json:"stack"`
+	// Cmd is the launch command; nil when nothing was recognised.
+	Cmd []string `json:"cmd"`
+	// PreferPort is the stack's usual port, 0 when it has none.
+	PreferPort int `json:"prefer_port"`
+	// Kind is "native" or "docker"; empty when nothing was recognised.
+	Kind string `json:"kind"`
+}
+
+// RouteRequest asks for Host to be served on 127.0.0.1:Port.
+type RouteRequest struct {
+	// Host is <name>.localhost: DNS labels of letters, digits and '-', ending
+	// in ".localhost". pm.localhost is the dashboard's and cannot be used.
+	// It is stored lowercase.
+	Host string `json:"host"`
+	// Port is where it answers, 1 to 65535. Nothing needs to listen there yet.
+	Port int `json:"port"`
+	// Owner is optional, with the grammar of a lease owner. Owners.Delete
+	// removes the routes of its owner.
+	Owner string `json:"owner,omitempty"`
+}
+
+// Route is an explicit route as stored.
+type Route struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	// Owner is empty when the route has none.
+	Owner string `json:"owner"`
+}
+
+// RouteInfo is a route the proxy serves, with where it comes from.
+type RouteInfo struct {
+	Host  string `json:"host"`
+	Port  int    `json:"port"`
+	Owner string `json:"owner"`
+	// Source is "explicit" (declared with Routes.Add) or "project" (derived
+	// from a running project).
+	Source string `json:"source"`
+}
+
+// Where a RouteInfo comes from.
+const (
+	RouteExplicit = "explicit"
+	RouteProject  = "project"
+)

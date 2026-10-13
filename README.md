@@ -105,7 +105,22 @@ if err != nil {
 }
 fmt.Println("started", unit.Unit, "pid", unit.PID)
 
-// Stop everything of the owner and release its leases.
+// Whose is each port on the machine? PS is `pm ps`: every project, run and
+// listener, attributed to its owner where pm can tell.
+rows, err := c.PS(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+for _, r := range rows {
+    fmt.Println(r.Name, r.Port, r.Status, "owner:", r.Owner)
+}
+
+// Give a port a name on port 80 (with Caddy), even if pm did not start it.
+if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "api-qa.localhost", Port: lease.Ports[0], Owner: "wt-qa"}); err != nil {
+    log.Fatal(err)
+}
+
+// Stop everything of the owner, release its leases and remove its routes.
 if _, err := c.Owners.Delete(ctx, "wt-qa"); err != nil {
     log.Fatal(err)
 }

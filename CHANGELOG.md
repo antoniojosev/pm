@@ -4,6 +4,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning is semver as it works before 1.0: a breaking change raises the
 minor version and is listed here.
 
+## [v0.2.1] - 2026-10-12
+
+Explicit routes (`pm route`, `/api/v1/routes`) and a Go client that covers the
+whole API instead of a subset; the design is in
+[ADR 002](docs/adr/0002-rutas-explicitas-y-cliente-completo.md). Nothing that
+existed changes.
+
+### Added
+
+- **Explicit routes.** `POST /api/v1/routes` publishes `<name>.localhost` for a
+  port pm did not start, `GET /api/v1/routes` lists them together with the
+  routes derived from running projects (`source: explicit | project`), and
+  `DELETE /api/v1/routes/{host}` removes one. An explicit route wins over a
+  derived one with the same host, persists in the registry, and goes away with
+  its owner (`DELETE /api/v1/owners/{owner}`). CLI: `pm route add|rm|ls`; MCP:
+  `pm_route_add`, `pm_route_rm`; the SSE stream emits `route.created` and
+  `route.deleted`.
+- **Complete Go client.** `client` gains `PS(ctx)` (the attributed picture of
+  the machine), `Detect(ctx, dir)` and `Routes.Add/Remove/List`, with their
+  types duplicated from `openapi.yaml`. The client-to-daemon contract test
+  covers the three and `TestTypesMatchTheDaemons` keeps the new types in step.
+  The package still imports only the standard library.
+
 ## [v0.2.0] - 2026-10-12
 
 pm becomes the process and port layer other tools can build on: a versioned,
@@ -123,5 +146,6 @@ First tagged release: the project registry, detection of what listens on which
 port, start/stop under `systemd --user`, `.localhost` names through Caddy, a web
 dashboard, the HTTP API and an MCP server with 13 tools.
 
+[v0.2.1]: https://github.com/antoniojosev/pm/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/antoniojosev/pm/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/antoniojosev/pm/releases/tag/v0.1.0

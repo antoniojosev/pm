@@ -337,3 +337,53 @@ func TestUnreachableDaemonSaysSo(t *testing.T) {
 		t.Fatalf("an unreachable daemon is not an API mismatch: %v", err)
 	}
 }
+
+func TestPSDetectAndRoutesAreShapedLikeTheAPI(t *testing.T) {
+	f, c := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/ps" || (r.Method == "GET" && r.URL.Path == "/api/v1/routes"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("null")) // a daemon that forgot [] must still give a usable slice
+		case r.URL.Path == "/api/v1/detect":
+			writeJSON(w, 200, map[string]any{"ok": true, "stack": "go", "cmd": []string{"go", "run", "."}, "prefer_port": 0, "kind": "native"})
+		case r.Method == "POST" && r.URL.Path == "/api/v1/routes":
+			writeJSON(w, 201, client.Route{Host: "x.localhost", Port: 9810})
+		case r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	ctx := context.Background()
+
+	if rows, err := c.PS(ctx); err != nil || rows == nil || len(rows) != 0 {
+		t.Fatalf("PS = %#v, %v", rows, err)
+	}
+	d, err := c.Detect(ctx, "/srv/my app")
+	if err != nil || !d.OK || d.Stack != "go" || d.Kind != "native" {
+		t.Fatalf("Detect = %+v, %v", d, err)
+	}
+	if r, err := c.Routes.Add(ctx, client.RouteRequest{Host: "x.localhost", Port: 9810}); err != nil || r.Port != 9810 {
+		t.Fatalf("Add = %+v, %v", r, err)
+	}
+	if err := c.Routes.Remove(ctx, "x.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if routes, err := c.Routes.List(ctx); err != nil || routes == nil || len(routes) != 0 {
+		t.Fatalf("List = %#v, %v", routes, err)
+	}
+
+	want := []string{
+		"GET /api/v1/version",
+		"GET /api/v1/ps",
+		"GET /api/v1/detect?path=%2Fsrv%2Fmy+app",
+		"POST /api/v1/routes",
+		"DELETE /api/v1/routes/x.localhost",
+		"GET /api/v1/routes",
+	}
+	if got := f.seen(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// An owner left empty is not sent: the daemon reads it as "no owner" either way.
+	if body := f.bodies[3]; body != `{"host":"x.localhost","port":9810}`+"\n" && body != `{"host":"x.localhost","port":9810}` {
+		t.Fatalf("route body = %q", body)
+	}
+}
