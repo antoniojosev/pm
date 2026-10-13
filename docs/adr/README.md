@@ -9,3 +9,4 @@ Una decisión aceptada no se edita: se reemplaza con otra que la cite.
 
 Las decisiones se registran como propuesta hasta que se ratifican. Qué se
 entregó de cada una, y en qué versión, está en el [CHANGELOG](../../CHANGELOG.md).
+| [002](0002-rutas-explicitas-y-cliente-completo.md) | Rutas explícitas `host → puerto` y un cliente que cubre toda la API | Propuesta |
