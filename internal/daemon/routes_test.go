@@ -181,8 +181,17 @@ func TestEventsReportRoutes(t *testing.T) {
 		t.Errorf("route.created took %v: it should not wait for the poll", d)
 	}
 
+	// the same call again changes nothing and says nothing; another owner is
+	// an update of the route, not a new one
+	do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810,"owner":"wt-qa"}`)
+	do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810,"owner":"wt-dev"}`)
+	name, got = nextRouteEvent(t, r)
+	if name != "route.updated" || got.Host != "x.localhost" || got.Port != 9810 || got.Owner != "wt-dev" {
+		t.Fatalf("event = %s %+v", name, got)
+	}
+
 	// deleting the owner removes the route and says so
-	do(t, srv, "DELETE", "/api/v1/owners/wt-qa", "")
+	do(t, srv, "DELETE", "/api/v1/owners/wt-dev", "")
 	name, got = nextRouteEvent(t, r)
 	if name != "route.deleted" || got.Host != "x.localhost" {
 		t.Fatalf("event = %s %+v", name, got)
@@ -235,6 +244,51 @@ func TestDiffExplicitRoutes(t *testing.T) {
 	}
 	if evs := diffExplicitRoutes(by(a), by(a)); len(evs) != 0 {
 		t.Fatalf("no change produced %+v", evs)
+	}
+	// same host and port with another owner is one route.updated, as it is now
+	a2 := registry.Route{Host: "a.localhost", Port: 1, Owner: "wt-qa"}
+	evs = diffExplicitRoutes(by(a), by(a2))
+	if len(evs) != 1 || evs[0].Name != "route.updated" || evs[0].Route != a2 {
+		t.Fatalf("owner change events = %+v", evs)
+	}
+}
+
+// A reload that fails is not remembered as done: the next round writes and
+// reloads again until Caddy accepts it, instead of leaving the route unserved
+// until some other route changes.
+func TestSyncProxyRetriesAFailedReload(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+	reloads := func() int { return len(sd.Calls("caddy")) }
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	failed := d.SyncProxy(last)
+	if failed != last {
+		t.Fatal("a failed reload was taken as done")
+	}
+	if reloads() != 2 {
+		t.Fatalf("caddy calls = %d, want the failed reload", reloads())
+	}
+	if d.SyncProxy(failed) != failed || reloads() != 3 {
+		t.Fatalf("the next round did not retry (%d calls)", reloads())
+	}
+
+	sd.FixCaddy(t)
+	last = d.SyncProxy(failed)
+	if last == failed || reloads() != 4 {
+		t.Fatalf("the retry did not go through (%d calls)", reloads())
+	}
+	if !strings.Contains(caddyfile(t, d), "reverse_proxy 127.0.0.1:9810") {
+		t.Fatalf("route missing:\n%s", caddyfile(t, d))
+	}
+	// now it is in force: nothing more to do
+	if d.SyncProxy(last) != last || reloads() != 4 {
+		t.Fatalf("an applied sync reloaded again (%d calls)", reloads())
 	}
 }
 

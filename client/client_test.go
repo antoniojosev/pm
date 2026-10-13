@@ -54,6 +54,20 @@ func (f *fakeDaemon) seen() []string {
 	return append([]string{}, f.requests...)
 }
 
+// seenBodies is every request body so far, in request order, read under the
+// lock the handler writes with.
+func (f *fakeDaemon) seenBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.bodies...)
+}
+
+// lastBody is the body of the latest request.
+func lastBody(f *fakeDaemon) string {
+	b := f.seenBodies()
+	return b[len(b)-1]
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -244,7 +258,7 @@ func TestRunSendsTheSpecAsJSON(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	var sent map[string]any
-	if err := json.Unmarshal([]byte(f.bodies[len(f.bodies)-1]), &sent); err != nil {
+	if err := json.Unmarshal([]byte(lastBody(f)), &sent); err != nil {
 		t.Fatal(err)
 	}
 	lim, _ := sent["limits"].(map[string]any)
@@ -260,8 +274,8 @@ func TestRunSendsTheSpecAsJSON(t *testing.T) {
 	if _, err := c.Run(context.Background(), client.RunSpec{Name: "y", Dir: "/srv", Cmd: []string{"true"}}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(f.bodies[len(f.bodies)-1], "limits") {
-		t.Fatalf("empty limits were sent: %s", f.bodies[len(f.bodies)-1])
+	if strings.Contains(lastBody(f), "limits") {
+		t.Fatalf("empty limits were sent: %s", lastBody(f))
 	}
 }
 
@@ -383,7 +397,7 @@ func TestPSDetectAndRoutesAreShapedLikeTheAPI(t *testing.T) {
 		t.Fatalf("requests =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	// An owner left empty is not sent: the daemon reads it as "no owner" either way.
-	if body := f.bodies[3]; body != `{"host":"x.localhost","port":9810}`+"\n" && body != `{"host":"x.localhost","port":9810}` {
+	if body := f.seenBodies()[3]; body != `{"host":"x.localhost","port":9810}`+"\n" && body != `{"host":"x.localhost","port":9810}` {
 		t.Fatalf("route body = %q", body)
 	}
 }

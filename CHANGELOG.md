@@ -19,13 +19,26 @@ existed changes.
   `DELETE /api/v1/routes/{host}` removes one. An explicit route wins over a
   derived one with the same host, persists in the registry, and goes away with
   its owner (`DELETE /api/v1/owners/{owner}`). CLI: `pm route add|rm|ls`; MCP:
-  `pm_route_add`, `pm_route_rm`; the SSE stream emits `route.created` and
+  `pm_route_add`, `pm_route_rm`; the SSE stream emits `route.created`,
+  `route.updated` (the same host and port got another owner) and
   `route.deleted`.
 - **Complete Go client.** `client` gains `PS(ctx)` (the attributed picture of
   the machine), `Detect(ctx, dir)` and `Routes.Add/Remove/List`, with their
   types duplicated from `openapi.yaml`. The client-to-daemon contract test
   covers the three and `TestTypesMatchTheDaemons` keeps the new types in step.
   The package still imports only the standard library.
+
+### Fixed
+
+- **Caddy reload is retried.** The daemon used to take a failed `caddy reload`
+  as done, so a route added while Caddy was down stayed unserved until another
+  route changed. A failed write or reload is now logged and tried again on the
+  next round (every 3 seconds).
+- `pm down --owner --keep-leases` now says in its flag help that it keeps the
+  owner's routes as well as its leases.
+- `openapi.yaml` documents the 400 of `DELETE /routes/{host}` and says that
+  `Row.owner` also comes from the `PM_OWNER` marker the daemon reads from an
+  unclaimed process.
 
 ## [v0.2.0] - 2026-10-12
 

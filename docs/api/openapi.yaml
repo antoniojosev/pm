@@ -480,6 +480,11 @@ paths:
         like asking for a host with no route at all.
       responses:
         "204": {description: Removed. No body.}
+        "400":
+          description: The registry could not be read or saved (for instance the disk is full or not writable). An unknown or malformed host is a 404, not a 400.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "404":
           description: No explicit route has this host.
           content:
@@ -554,6 +559,10 @@ paths:
         - `lease.released`: a lease was released; `data` is the `Lease` as it
           was.
         - `route.created`: an explicit route was added; `data` is the `Route`.
+        - `route.updated`: an existing explicit route kept its host and port
+          but changed owner (`POST /routes` again with another `owner`); `data`
+          is the `Route` as it is now. Repeating the call with the same owner
+          is not a change and sends nothing.
         - `route.deleted`: an explicit route was removed, by `DELETE /routes/{host}`
           or by deleting its owner; `data` is the `Route` as it was.
         - `owner.stopped`: an owner was stopped (`POST /owners/{owner}/stop`,
@@ -1091,7 +1100,7 @@ components:
         pid: {type: integer}
         unit: {type: string}
         group: {type: string}
-        owner: {type: string, description: 'Who a process started by `POST /run` is for.'}
+        owner: {type: string, description: 'Who the process belongs to: the owner of a run (`POST /run`) or of a registered project, or, for an unclaimed process, the `PM_OWNER` marker the daemon found in its environment (when it is a valid owner name).'}
         cmd: {type: string}
         cwd: {type: string}
         docker: {type: boolean}

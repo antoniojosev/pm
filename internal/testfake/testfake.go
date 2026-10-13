@@ -58,6 +58,7 @@ exit 0
 const caddyScript = `#!/bin/sh
 state="$PM_FAKE_STATE"
 { echo "caddy"; for a in "$@"; do echo "$a"; done; echo "--end--"; } >> "$state/calls"
+if [ -e "$state/fail-caddy" ]; then echo "fake caddy: reload refused" >&2; exit 1; fi
 exit 0
 `
 
@@ -235,6 +236,22 @@ func (s *Systemd) DelaySystemdRun(t *testing.T, d time.Duration) {
 func (s *Systemd) FailSystemdRun(t *testing.T) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(s.state, "fail-systemd-run"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FailCaddy makes every later caddy call exit with an error; FixCaddy undoes it.
+func (s *Systemd) FailCaddy(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.state, "fail-caddy"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FixCaddy makes caddy succeed again after FailCaddy.
+func (s *Systemd) FixCaddy(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(s.state, "fail-caddy")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 }

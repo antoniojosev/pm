@@ -671,7 +671,7 @@ Examples:
 		},
 	}
 	c.Flags().StringVar(&owner, "owner", "", "bring down everything that belongs to this owner (a worktree or script name)")
-	c.Flags().BoolVar(&keepLeases, "keep-leases", false, "with --owner: stop the processes but keep the port leases")
+	c.Flags().BoolVar(&keepLeases, "keep-leases", false, "with --owner: stop the processes but keep the port leases and routes")
 	c.Flags().BoolVar(&asJSON, "json", false, "with --owner: print the result as JSON")
 	return c
 }

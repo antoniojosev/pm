@@ -108,8 +108,11 @@ func (d *Daemon) reconcileProxy(ctx context.Context) {
 // every route (those declared with `pm route add` and those derived from
 // running projects, the explicit one winning on a shared host), and when the
 // text differs from last it writes the file and reloads Caddy. It returns the
-// text now in force, to pass to the next call; on a failure that is last, so
-// the next round tries again.
+// text now in force, to pass to the next call. When the file cannot be written
+// or the reload fails it returns last instead, so the next round renders the
+// same text again and retries both (a Caddy that was down when the route
+// appeared picks it up once it is back). A missing caddy binary is not a
+// failure: there is nothing to reload.
 func (d *Daemon) SyncProxy(last string) string {
 	routes, err := d.svc.Routes()
 	if err != nil {
@@ -124,9 +127,13 @@ func (d *Daemon) SyncProxy(last string) string {
 		return last
 	}
 	if err := proxy.Write(d.svc.Paths.Caddyfile, pr, d.port); err != nil {
+		log.Printf("proxy: write %s: %v", d.svc.Paths.Caddyfile, err)
 		return last
 	}
-	_ = proxy.Reload(d.svc.Paths.Caddyfile)
+	if err := proxy.Reload(d.svc.Paths.Caddyfile); err != nil {
+		log.Printf("proxy: %v (will retry)", err)
+		return last
+	}
 	return content
 }
 
