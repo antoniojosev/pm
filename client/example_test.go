@@ -46,6 +46,21 @@ func Example() {
 	out, _ := c.Logs(ctx, "api-qa", 20)
 	fmt.Println(out)
 
+	// Whose is each port on the machine? PS attributes what it can.
+	rows, err := c.PS(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range rows {
+		fmt.Println(r.Name, r.Port, r.Status, "owner:", r.Owner)
+	}
+
+	// Give the process a name on port 80 (needs Caddy; see Version), without
+	// pm having to manage it.
+	if _, err := c.Routes.Add(ctx, client.RouteRequest{Host: "api-qa.localhost", Port: lease.Ports[0], Owner: "wt-qa"}); err != nil {
+		log.Fatal(err)
+	}
+
 	// Everything of the owner stops and its leases are released.
 	if _, err := c.Owners.Delete(ctx, "wt-qa"); err != nil {
 		log.Fatal(err)
@@ -68,4 +83,22 @@ func ExampleVersionError() {
 	// Output:
 	// true
 	// pm daemon speaks API v2 (pm 3.0.0) but this client speaks API v1: use a client that matches the daemon
+}
+
+// What would pm do with this directory? Detect answers without registering
+// anything; an unrecognised directory is ok == false, not an error.
+func ExampleClient_Detect() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/version" {
+			fmt.Fprint(w, `{"version":"0.2.1","api":1,"caddy":false,"docker":false,"systemd":true}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"stack":"go","cmd":["go","run","."],"prefer_port":0,"kind":"native"}`)
+	}))
+	defer srv.Close()
+
+	d, err := client.New(srv.URL).Detect(context.Background(), "/home/me/src/api")
+	fmt.Println(d.OK, d.Stack, d.Cmd, err)
+	// Output:
+	// true go [go run .] <nil>
 }

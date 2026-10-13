@@ -5,6 +5,7 @@
 //
 //	c := client.New("http://127.0.0.1:9797")
 //	lease, err := c.Leases.Create(ctx, client.LeaseRequest{Owner: "wt-qa", Count: 2})
+//	rows, err := c.PS(ctx) // what is listening, and whose it is
 //
 // Before its first request a Client asks the daemon which API generation it
 // speaks and fails with a *VersionError (errors.Is(err, ErrIncompatible)) when
@@ -40,6 +41,8 @@ type Client struct {
 	Leases *LeasesService
 	// Owners acts on everything that belongs to an owner at once.
 	Owners *OwnersService
+	// Routes publishes names (<name>.localhost) for ports.
+	Routes *RoutesService
 
 	base      string
 	http      *http.Client
@@ -69,6 +72,7 @@ func New(baseURL string, opts ...Option) *Client {
 	c := &Client{base: strings.TrimRight(baseURL, "/"), http: http.DefaultClient}
 	c.Leases = &LeasesService{c}
 	c.Owners = &OwnersService{c}
+	c.Routes = &RoutesService{c}
 	for _, o := range opts {
 		o(c)
 	}
@@ -99,6 +103,30 @@ func (c *Client) Version(ctx context.Context) (VersionInfo, error) {
 	c.versionOK = true
 	c.mu.Unlock()
 	return v, nil
+}
+
+// PS is the picture of the machine pm gives: one Row per registered project
+// (up, down or failed), per process started with Run and per listener nobody
+// claims, each attributed to its owner where pm can tell. It is what
+// `pm ps` prints. It is never nil on success.
+func (c *Client) PS(ctx context.Context) ([]Row, error) {
+	rows := []Row{}
+	err := c.checked(ctx, http.MethodGet, "/ps", nil, nil, &rows)
+	if rows == nil {
+		rows = []Row{}
+	}
+	return rows, err
+}
+
+// Detect infers the stack and launch command of the project in dir, an
+// absolute path on the daemon's machine. A directory pm does not recognise
+// (or that does not exist) is not an error: Detected.OK is false.
+func (c *Client) Detect(ctx context.Context, dir string) (Detected, error) {
+	q := url.Values{}
+	q.Set("path", dir)
+	var d Detected
+	err := c.checked(ctx, http.MethodGet, "/detect", q, nil, &d)
+	return d, err
 }
 
 // Run starts the process spec describes, without registering it. The unit is
@@ -152,6 +180,39 @@ func (s *LeasesService) List(ctx context.Context, owner string) ([]Lease, error)
 	leases := []Lease{}
 	err := s.c.checked(ctx, http.MethodGet, "/leases", q, nil, &leases)
 	return leases, err
+}
+
+// RoutesService is the route part of the API: names for ports.
+type RoutesService struct{ c *Client }
+
+// Add publishes req.Host for 127.0.0.1:req.Port, for a port pm did not start.
+// The route persists until Remove (or the deletion of its Owner). Repeating a
+// call with the same host and port is fine; a host that already routes to
+// another port is a *Error with Status 409.
+func (s *RoutesService) Add(ctx context.Context, req RouteRequest) (Route, error) {
+	var r Route
+	err := s.c.checked(ctx, http.MethodPost, "/routes", nil, req, &r)
+	return r, err
+}
+
+// Remove deletes the explicit route of host. A host with no explicit route,
+// including one that only exists as a running project's name, is a *Error
+// with Status 404.
+func (s *RoutesService) Remove(ctx context.Context, host string) error {
+	return s.c.checked(ctx, http.MethodDelete, "/routes/"+url.PathEscape(host), nil, nil, nil)
+}
+
+// List returns every route the proxy serves, by host: explicit ones and those
+// derived from running projects, told apart by Source. It is never nil on
+// success. Routes are listed whether or not Caddy is installed; Version says
+// whether anything will serve them.
+func (s *RoutesService) List(ctx context.Context) ([]RouteInfo, error) {
+	routes := []RouteInfo{}
+	err := s.c.checked(ctx, http.MethodGet, "/routes", nil, nil, &routes)
+	if routes == nil {
+		routes = []RouteInfo{}
+	}
+	return routes, err
 }
 
 // OwnersService acts on everything that belongs to an owner.
