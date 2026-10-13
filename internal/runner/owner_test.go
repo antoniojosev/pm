@@ -82,6 +82,18 @@ func TestRunSpecReservesPMOwner(t *testing.T) {
 	}
 }
 
+// waitForArgv blocks until /proc/<pid>/cmdline of pid is readable.
+func waitForArgv(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for len(procArgv(pid)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("/proc/%d/cmdline stayed empty", pid)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestRestartInstanceKeepsTheOwnerMarker(t *testing.T) {
 	r, f := newTestRunner(t)
 	cmd := exec.Command("sleep", "30")
@@ -89,6 +101,10 @@ func TestRestartInstanceKeepsTheOwnerMarker(t *testing.T) {
 		t.Skip(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	// Right after Start the kernel may still be swapping the process image, and
+	// /proc/<pid>/cmdline reads empty for a moment: wait until it has an argv
+	// instead of racing it.
+	waitForArgv(t, cmd.Process.Pid)
 	cwd, _ := os.Getwd()
 	r.Snap = func() ([]detector.Instance, error) {
 		return []detector.Instance{{Port: 4000, PID: cmd.Process.Pid, Cwd: cwd, Owner: "wt-qa"}}, nil

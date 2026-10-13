@@ -73,9 +73,17 @@ func Reload(caddyfile string) error {
 	}
 	out, err := exec.Command("caddy", "reload", "--config", caddyfile, "--adapter", "caddyfile").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("caddy reload: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("caddy reload: %v: %s", err, lastLine(string(out)))
 	}
 	return nil
+}
+
+// lastLine returns the last non-empty line of out. Caddy writes a JSON log
+// line with a changing timestamp before its "Error: ..." line, and the error
+// is the part worth keeping in a one-line message.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // Available reports whether the caddy binary is installed.

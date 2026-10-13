@@ -450,9 +450,9 @@ func writeOwnerResult(w http.ResponseWriter, res api.OwnerResult, err error) {
 // CLI) does. A client sees only the leases that change after it connected;
 // GET /leases gives the starting point. `owner.stopped` and `owner.deleted`
 // carry the owner result, as soon as the daemon (API or MCP) stops or deletes
-// an owner; the CLI, a separate process, does not publish them. `route.created`
-// and `route.deleted` carry an explicit route, like the lease events: at once
-// when the daemon changes it, within one tick when the CLI does.
+// an owner; the CLI, a separate process, does not publish them. `route.created`,
+// `route.updated` and `route.deleted` carry an explicit route, like the lease
+// events: at once when the daemon changes it, within one tick when the CLI does.
 func (d *Daemon) hEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -568,7 +568,7 @@ func sortedIDs(m map[string]registry.Lease) []string {
 
 // routeEvent is one change between two route sets.
 type routeEvent struct {
-	Name  string // route.created | route.deleted
+	Name  string // route.created | route.updated | route.deleted
 	Route registry.Route
 }
 
@@ -582,7 +582,8 @@ func routesByHost(rs []registry.Route) map[string]registry.Route {
 
 // diffExplicitRoutes lists what changed from prev to cur, in host order so the stream
 // is deterministic: removals first, so a host that changed port reads as the
-// old route going and the new one arriving.
+// old route going and the new one arriving; a host that kept its port but
+// changed owner is a single route.updated carrying the route as it is now.
 func diffExplicitRoutes(prev, cur map[string]registry.Route) []routeEvent {
 	var evs []routeEvent
 	for _, host := range sortedHosts(prev) {
@@ -591,8 +592,12 @@ func diffExplicitRoutes(prev, cur map[string]registry.Route) []routeEvent {
 		}
 	}
 	for _, host := range sortedHosts(cur) {
-		if was, had := prev[host]; !had || was.Port != cur[host].Port {
+		was, had := prev[host]
+		switch {
+		case !had || was.Port != cur[host].Port:
 			evs = append(evs, routeEvent{"route.created", cur[host]})
+		case was.Owner != cur[host].Owner:
+			evs = append(evs, routeEvent{"route.updated", cur[host]})
 		}
 	}
 	return evs

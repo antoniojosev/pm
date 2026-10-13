@@ -122,3 +122,13 @@ func TestReloadWithoutCaddyIsNoop(t *testing.T) {
 		t.Fatalf("Reload without caddy should be a no-op, got %v", err)
 	}
 }
+
+func TestLastLineKeepsTheErrorOfCaddyOutput(t *testing.T) {
+	out := "{\"level\":\"info\",\"ts\":1791867455.69,\"msg\":\"using provided configuration\"}\nError: sending configuration to running instance: connection refused\n\n"
+	if got := lastLine(out); got != "Error: sending configuration to running instance: connection refused" {
+		t.Fatalf("lastLine = %q", got)
+	}
+	if got := lastLine(""); got != "" {
+		t.Fatalf("lastLine of nothing = %q", got)
+	}
+}

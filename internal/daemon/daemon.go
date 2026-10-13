@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -21,6 +22,10 @@ import (
 type Daemon struct {
 	svc  *api.Service
 	port int
+	// proxyFailing is true while the proxy sync is failing: SyncProxy logs the
+	// switch from working to failing and the one back, never the rounds in
+	// between. Only the reconciliation loop touches it.
+	proxyFailing bool
 }
 
 // New builds a daemon around a service.
@@ -108,8 +113,18 @@ func (d *Daemon) reconcileProxy(ctx context.Context) {
 // every route (those declared with `pm route add` and those derived from
 // running projects, the explicit one winning on a shared host), and when the
 // text differs from last it writes the file and reloads Caddy. It returns the
-// text now in force, to pass to the next call; on a failure that is last, so
-// the next round tries again.
+// text now in force, to pass to the next call. When the file cannot be written
+// or the reload fails it returns "", which is never equal to a render: the
+// file on disk may already hold text Caddy did not accept, so the next round
+// must write and reload again whatever the routes are by then. Returning last
+// would be wrong, because a route removed in the meantime would render the
+// same text as last and the stale file would stay on disk, to be served by
+// Caddy the next time it starts. A failure is logged once, when the sync goes
+// from working to failing, and the recovery once; the rounds in between log
+// nothing, whatever the message says (a real Caddy prefixes its error with a
+// timestamped line, so comparing messages would log every round), so a Caddy
+// that stays down does not fill the journal. A missing caddy binary is not a failure: there is nothing
+// to reload.
 func (d *Daemon) SyncProxy(last string) string {
 	routes, err := d.svc.Routes()
 	if err != nil {
@@ -124,10 +139,26 @@ func (d *Daemon) SyncProxy(last string) string {
 		return last
 	}
 	if err := proxy.Write(d.svc.Paths.Caddyfile, pr, d.port); err != nil {
-		return last
+		d.proxyFailed(fmt.Sprintf("proxy: write %s: %v (will retry)", d.svc.Paths.Caddyfile, err))
+		return ""
 	}
-	_ = proxy.Reload(d.svc.Paths.Caddyfile)
+	if err := proxy.Reload(d.svc.Paths.Caddyfile); err != nil {
+		d.proxyFailed(fmt.Sprintf("proxy: %v (will retry)", err))
+		return ""
+	}
+	if d.proxyFailing {
+		log.Printf("proxy: reload succeeded again")
+		d.proxyFailing = false
+	}
 	return content
+}
+
+// proxyFailed logs msg only when the sync was working until now.
+func (d *Daemon) proxyFailed(msg string) {
+	if !d.proxyFailing {
+		log.Print(msg)
+		d.proxyFailing = true
+	}
 }
 
 // spaHandler serves the embedded SPA with index.html fallback for client routes.

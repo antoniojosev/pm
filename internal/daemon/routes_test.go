@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,8 +183,17 @@ func TestEventsReportRoutes(t *testing.T) {
 		t.Errorf("route.created took %v: it should not wait for the poll", d)
 	}
 
+	// the same call again changes nothing and says nothing; another owner is
+	// an update of the route, not a new one
+	do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810,"owner":"wt-qa"}`)
+	do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810,"owner":"wt-dev"}`)
+	name, got = nextRouteEvent(t, r)
+	if name != "route.updated" || got.Host != "x.localhost" || got.Port != 9810 || got.Owner != "wt-dev" {
+		t.Fatalf("event = %s %+v", name, got)
+	}
+
 	// deleting the owner removes the route and says so
-	do(t, srv, "DELETE", "/api/v1/owners/wt-qa", "")
+	do(t, srv, "DELETE", "/api/v1/owners/wt-dev", "")
 	name, got = nextRouteEvent(t, r)
 	if name != "route.deleted" || got.Host != "x.localhost" {
 		t.Fatalf("event = %s %+v", name, got)
@@ -235,6 +246,85 @@ func TestDiffExplicitRoutes(t *testing.T) {
 	}
 	if evs := diffExplicitRoutes(by(a), by(a)); len(evs) != 0 {
 		t.Fatalf("no change produced %+v", evs)
+	}
+	// same host and port with another owner is one route.updated, as it is now
+	a2 := registry.Route{Host: "a.localhost", Port: 1, Owner: "wt-qa"}
+	evs = diffExplicitRoutes(by(a), by(a2))
+	if len(evs) != 1 || evs[0].Name != "route.updated" || evs[0].Route != a2 {
+		t.Fatalf("owner change events = %+v", evs)
+	}
+}
+
+// A reload that fails is not remembered as done: the next round writes and
+// reloads again until Caddy accepts it, instead of leaving the route unserved
+// until some other route changes.
+func TestSyncProxyRetriesAFailedReload(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+	reloads := func() int { return len(sd.Calls("caddy")) }
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	failed := d.SyncProxy(last)
+	if failed == last || failed != "" {
+		t.Fatalf("a failed reload was taken as done: %q", failed)
+	}
+	if reloads() != 2 {
+		t.Fatalf("caddy calls = %d, want the failed reload", reloads())
+	}
+	if d.SyncProxy(failed) != "" || reloads() != 3 {
+		t.Fatalf("the next round did not retry (%d calls)", reloads())
+	}
+
+	sd.FixCaddy(t)
+	last = d.SyncProxy(failed)
+	if last == failed || reloads() != 4 {
+		t.Fatalf("the retry did not go through (%d calls)", reloads())
+	}
+	if !strings.Contains(caddyfile(t, d), "reverse_proxy 127.0.0.1:9810") {
+		t.Fatalf("route missing:\n%s", caddyfile(t, d))
+	}
+	// now it is in force: nothing more to do
+	if d.SyncProxy(last) != last || reloads() != 4 {
+		t.Fatalf("an applied sync reloaded again (%d calls)", reloads())
+	}
+}
+
+// A route removed while Caddy is down must not survive in the Caddyfile: the
+// file written by the failed round holds it, and pm-proxy reads that file when
+// it starts again.
+func TestSyncProxyDropsARouteRemovedDuringAnOutage(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	failed := d.SyncProxy(last)
+	if !strings.Contains(caddyfile(t, d), "9810") {
+		t.Fatalf("the failed round should have written the route:\n%s", caddyfile(t, d))
+	}
+	if code, raw := doStatus(t, srv, "DELETE", "/api/v1/routes/x.localhost", ""); code != 204 {
+		t.Fatalf("DELETE /routes = %d %s", code, raw)
+	}
+
+	sd.FixCaddy(t)
+	now := d.SyncProxy(failed)
+	if strings.Contains(caddyfile(t, d), "9810") {
+		t.Fatalf("the removed route is still in the Caddyfile:\n%s", caddyfile(t, d))
+	}
+	if now == "" || now == failed {
+		t.Fatalf("the recovery round was not taken as applied: %q", now)
+	}
+	if d.SyncProxy(now) != now {
+		t.Fatal("an applied sync was repeated")
 	}
 }
 
@@ -347,5 +437,46 @@ func TestExplicitRouteReplacesTheProjectsInTheCaddyfile(t *testing.T) {
 	_ = json.Unmarshal([]byte(raw), &list)
 	if len(list) != 1 || list[0]["source"] != "explicit" || list[0]["port"] != float64(9810) {
 		t.Fatalf("GET /routes = %s", raw)
+	}
+}
+
+// A Caddy that stays down is one line in the log, not one per round, even
+// though the real caddy puts a line with a new timestamp before its error (the
+// fake does the same), and coming back is one more line.
+func TestSyncProxyLogsAnOutageOnce(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	for i := 0; i < 3; i++ {
+		last = d.SyncProxy(last)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "proxy:"); n != 1 || strings.Count(out, "\n") != 1 {
+		t.Fatalf("3 failed rounds logged %d proxy lines, want one single-line entry:\n%s", n, out)
+	}
+	if !strings.Contains(out, "reload refused") || strings.Contains(out, "using provided configuration") {
+		t.Fatalf("the entry should carry the error line only:\n%s", out)
+	}
+
+	buf.Reset()
+	sd.FixCaddy(t)
+	last = d.SyncProxy(last)
+	if out := buf.String(); strings.Count(out, "\n") != 1 || !strings.Contains(out, "succeeded again") {
+		t.Fatalf("recovery log = %q, want one line", out)
+	}
+	buf.Reset()
+	d.SyncProxy(last)
+	if buf.Len() != 0 {
+		t.Fatalf("a healthy round logged %q", buf.String())
 	}
 }
