@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -435,5 +437,46 @@ func TestExplicitRouteReplacesTheProjectsInTheCaddyfile(t *testing.T) {
 	_ = json.Unmarshal([]byte(raw), &list)
 	if len(list) != 1 || list[0]["source"] != "explicit" || list[0]["port"] != float64(9810) {
 		t.Fatalf("GET /routes = %s", raw)
+	}
+}
+
+// A Caddy that stays down is one line in the log, not one per round, even
+// though the real caddy puts a line with a new timestamp before its error (the
+// fake does the same), and coming back is one more line.
+func TestSyncProxyLogsAnOutageOnce(t *testing.T) {
+	d, srv := newTestDaemon(t)
+	sd := testfake.Install(t)
+	sd.Caddy(t)
+	last := d.SyncProxy("")
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	sd.FailCaddy(t)
+	if code, _, raw := do(t, srv, "POST", "/api/v1/routes", `{"host":"x.localhost","port":9810}`); code != 201 {
+		t.Fatalf("POST /routes = %d %s", code, raw)
+	}
+	for i := 0; i < 3; i++ {
+		last = d.SyncProxy(last)
+	}
+	out := buf.String()
+	if n := strings.Count(out, "proxy:"); n != 1 || strings.Count(out, "\n") != 1 {
+		t.Fatalf("3 failed rounds logged %d proxy lines, want one single-line entry:\n%s", n, out)
+	}
+	if !strings.Contains(out, "reload refused") || strings.Contains(out, "using provided configuration") {
+		t.Fatalf("the entry should carry the error line only:\n%s", out)
+	}
+
+	buf.Reset()
+	sd.FixCaddy(t)
+	last = d.SyncProxy(last)
+	if out := buf.String(); strings.Count(out, "\n") != 1 || !strings.Contains(out, "succeeded again") {
+		t.Fatalf("recovery log = %q, want one line", out)
+	}
+	buf.Reset()
+	d.SyncProxy(last)
+	if buf.Len() != 0 {
+		t.Fatalf("a healthy round logged %q", buf.String())
 	}
 }

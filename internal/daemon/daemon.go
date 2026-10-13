@@ -22,9 +22,10 @@ import (
 type Daemon struct {
 	svc  *api.Service
 	port int
-	// proxyErr is the failure SyncProxy last logged, "" when the last round
-	// went through. Only the reconciliation loop touches it.
-	proxyErr string
+	// proxyFailing is true while the proxy sync is failing: SyncProxy logs the
+	// switch from working to failing and the one back, never the rounds in
+	// between. Only the reconciliation loop touches it.
+	proxyFailing bool
 }
 
 // New builds a daemon around a service.
@@ -118,9 +119,11 @@ func (d *Daemon) reconcileProxy(ctx context.Context) {
 // must write and reload again whatever the routes are by then. Returning last
 // would be wrong, because a route removed in the meantime would render the
 // same text as last and the stale file would stay on disk, to be served by
-// Caddy the next time it starts. A failure is logged when it first appears or
-// its message changes, and the recovery once; a Caddy that stays down does not
-// fill the journal. A missing caddy binary is not a failure: there is nothing
+// Caddy the next time it starts. A failure is logged once, when the sync goes
+// from working to failing, and the recovery once; the rounds in between log
+// nothing, whatever the message says (a real Caddy prefixes its error with a
+// timestamped line, so comparing messages would log every round), so a Caddy
+// that stays down does not fill the journal. A missing caddy binary is not a failure: there is nothing
 // to reload.
 func (d *Daemon) SyncProxy(last string) string {
 	routes, err := d.svc.Routes()
@@ -143,19 +146,18 @@ func (d *Daemon) SyncProxy(last string) string {
 		d.proxyFailed(fmt.Sprintf("proxy: %v (will retry)", err))
 		return ""
 	}
-	if d.proxyErr != "" {
+	if d.proxyFailing {
 		log.Printf("proxy: reload succeeded again")
-		d.proxyErr = ""
+		d.proxyFailing = false
 	}
 	return content
 }
 
-// proxyFailed logs msg unless it is the message already logged for the
-// failure in progress.
+// proxyFailed logs msg only when the sync was working until now.
 func (d *Daemon) proxyFailed(msg string) {
-	if msg != d.proxyErr {
+	if !d.proxyFailing {
 		log.Print(msg)
-		d.proxyErr = msg
+		d.proxyFailing = true
 	}
 }
 

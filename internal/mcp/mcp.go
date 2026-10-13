@@ -82,7 +82,7 @@ func register(s *server.MCPServer, svc *api.Service) {
 		})
 
 	s.AddTool(mcp.NewTool("pm_owner_down",
-		mcp.WithDescription("Bring down everything that belongs to an owner (a worktree, a script, an agent): its projects, the processes it started with pm_run (they are forgotten once stopped) and any process that carries PM_OWNER=<owner>. Also releases the owner's port leases and deletes its routes unless keep_leases is true. Returns {owner, stopped[], leases_released[]}; an owner with nothing is not an error. If something cannot be stopped the rest still is, and the leases are kept."),
+		mcp.WithDescription("Bring down everything that belongs to an owner (a worktree, a script, an agent): its projects, the processes it started with pm_run (they are forgotten once stopped) and any process that carries PM_OWNER=<owner>. Also releases the owner's port leases and deletes its routes unless keep_leases is true. Returns {owner, stopped[], leases_released[]} (the routes deleted are not listed); an owner with nothing is not an error. If something cannot be stopped the rest still is, and the leases and routes are kept."),
 		mcp.WithString("owner", mcp.Required(), mcp.Description("the owner name, as given to pm_run or a lease")),
 		mcp.WithBoolean("keep_leases", mcp.Description("stop the processes but keep the port leases and routes (default false)"))),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

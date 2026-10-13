@@ -58,7 +58,13 @@ exit 0
 const caddyScript = `#!/bin/sh
 state="$PM_FAKE_STATE"
 { echo "caddy"; for a in "$@"; do echo "$a"; done; echo "--end--"; } >> "$state/calls"
-if [ -e "$state/fail-caddy" ]; then echo "fake caddy: reload refused" >&2; exit 1; fi
+if [ -e "$state/fail-caddy" ]; then
+  # like the real caddy: a log line that changes on every call (the pid
+  # stands in for the timestamp: PATH has no date here), then the error
+  echo "{\"level\":\"info\",\"ts\":$$,\"msg\":\"using provided configuration\"}" >&2
+  echo "Error: fake caddy: reload refused" >&2
+  exit 1
+fi
 exit 0
 `
 
